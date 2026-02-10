@@ -1,6 +1,33 @@
+<script lang="ts">
+  let inRoom = $state(false);
+</script>
+
 <main class="container">
   <h1>Gezellig</h1>
-  <p>Your virtual office</p>
+
+  <section data-testid="online-users">
+    <h2>Online</h2>
+    <ul>
+      <li>You</li>
+    </ul>
+  </section>
+
+  <section data-testid="room">
+    <h2>Room</h2>
+    {#if inRoom}
+      <ul>
+        <li>You</li>
+      </ul>
+    {:else}
+      <p class="empty-state">No one is in the room</p>
+    {/if}
+  </section>
+
+  {#if inRoom}
+    <button data-testid="leave-room-button" onclick={() => inRoom = false}>Leave Room</button>
+  {:else}
+    <button data-testid="join-room-button" onclick={() => inRoom = true}>Join Room</button>
+  {/if}
 </main>
 
 <style>
