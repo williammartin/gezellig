@@ -8,7 +8,7 @@
   let musicVolume = $state(50);
   let showSettings = $state(false);
   let displayName = $state("");
-  let livekitUrl = $state("");
+  let livekitUrl = $state("wss://gezellig-tmbd1vyo.livekit.cloud");
   let livekitToken = $state("");
   let setupComplete = $state(false);
   let livekitConnected = $state(false);
