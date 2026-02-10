@@ -173,24 +173,35 @@ async fn run_librespot(
     let device_id = session_config.device_id.clone();
     let client_id = session_config.client_id.clone();
 
+    log::info!("[DJ] Starting Zeroconf discovery for '{DEVICE_NAME}' (device_id={device_id})");
+
     let mut discovery = Discovery::builder(device_id, client_id)
         .name(DEVICE_NAME)
         .launch()
-        .map_err(|e| format!("Failed to start Zeroconf discovery: {e}"))?;
+        .map_err(|e| {
+            log::error!("[DJ] Failed to start Zeroconf discovery: {e}");
+            format!("Failed to start Zeroconf discovery: {e}")
+        })?;
 
-    log::info!("Spotify Connect device '{DEVICE_NAME}' is now discoverable");
+    log::info!("[DJ] Spotify Connect device '{DEVICE_NAME}' is now discoverable via mDNS");
 
     // Wait for Spotify to connect and provide credentials
     let credentials = loop {
         tokio::select! {
             _ = &mut *shutdown_rx => {
-                log::info!("Librespot shutdown requested during discovery");
+                log::info!("[DJ] Librespot shutdown requested during discovery");
                 return Ok(());
             }
             item = discovery.next() => {
                 match item {
-                    Some(creds) => break creds,
-                    None => return Err("Discovery stream ended without credentials".to_string()),
+                    Some(creds) => {
+                        log::info!("[DJ] Spotify credentials received!");
+                        break creds;
+                    }
+                    None => {
+                        log::error!("[DJ] Discovery stream ended without credentials");
+                        return Err("Discovery stream ended without credentials".to_string());
+                    }
                 }
             }
         }
