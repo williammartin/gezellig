@@ -3,14 +3,12 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
-    pub display_name: String,
     pub livekit_url: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            display_name: "You".to_string(),
             livekit_url: String::new(),
         }
     }
@@ -41,7 +39,6 @@ mod tests {
     #[test]
     fn default_settings_have_reasonable_values() {
         let settings = Settings::default();
-        assert_eq!(settings.display_name, "You");
         assert_eq!(settings.livekit_url, "");
     }
 
@@ -51,7 +48,6 @@ mod tests {
         let path = dir.path().join("settings.json");
 
         let settings = Settings {
-            display_name: "Alice".to_string(),
             livekit_url: "wss://example.livekit.cloud".to_string(),
         };
 

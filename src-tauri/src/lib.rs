@@ -1,11 +1,12 @@
 mod audio;
+#[allow(dead_code)]
 mod dj_publisher;
 mod librespot_pipeline;
 mod livekit_room;
 mod room;
 mod settings;
 
-use audio::{AudioPipeline, DjStatus, StubAudioPipeline};
+use audio::{AudioPipeline, DjStatus};
 use livekit_room::LiveKitRoom;
 use room::RoomState;
 use settings::Settings;
@@ -54,11 +55,9 @@ fn stop_dj(state: State<'_, Mutex<RoomState>>) -> Result<(), String> {
 #[tauri::command]
 fn save_settings(
     settings_path: State<'_, SettingsPath>,
-    display_name: String,
     livekit_url: String,
 ) -> Result<(), String> {
     let settings = Settings {
-        display_name,
         livekit_url,
     };
     settings.save(&settings_path.0)

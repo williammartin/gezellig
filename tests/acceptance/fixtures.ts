@@ -9,10 +9,13 @@ export const test = base.extend({
     // Navigate first to set the origin for localStorage
     await page.goto('/');
     await page.evaluate(() => {
+      // Create a JWT-like token with identity in the payload
+      const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+      const payload = btoa(JSON.stringify({ sub: 'You', name: 'You' }));
+      const token = `${header}.${payload}.test-signature`;
       localStorage.setItem('gezellig-setup', JSON.stringify({
-        displayName: 'You',
         livekitUrl: 'wss://test.livekit.cloud',
-        livekitToken: 'test-token',
+        livekitToken: token,
       }));
     });
     // Reload so the app picks up the saved setup

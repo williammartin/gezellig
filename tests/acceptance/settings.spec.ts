@@ -22,13 +22,6 @@ test.describe('Settings', () => {
     await expect(page.locator('[data-testid="settings-panel"]')).not.toBeVisible();
   });
 
-  test('shows display name field', async ({ page }) => {
-    await page.goto('/');
-    await page.locator('[data-testid="settings-button"]').click();
-    const nameInput = page.locator('[data-testid="display-name-input"]');
-    await expect(nameInput).toBeVisible();
-  });
-
   test('shows LiveKit server URL field', async ({ page }) => {
     await page.goto('/');
     await page.locator('[data-testid="settings-button"]').click();
@@ -36,22 +29,15 @@ test.describe('Settings', () => {
     await expect(urlInput).toBeVisible();
   });
 
-  test('display name is used in online users list', async ({ page }) => {
+  test('display name from JWT is shown in online users list', async ({ page }) => {
     await page.goto('/');
-    await page.locator('[data-testid="settings-button"]').click();
-    const nameInput = page.locator('[data-testid="display-name-input"]');
-    await nameInput.fill('Alice');
-    await page.locator('[data-testid="settings-close"]').click();
-    await expect(page.locator('[data-testid="online-users"]')).toContainText('Alice');
+    await expect(page.locator('[data-testid="online-users"]')).toContainText('You');
   });
 
-  test('display name is used when joining the room', async ({ page }) => {
+  test('display name from JWT is used when joining the room', async ({ page }) => {
     await page.goto('/');
-    await page.locator('[data-testid="settings-button"]').click();
-    await page.locator('[data-testid="display-name-input"]').fill('Bob');
-    await page.locator('[data-testid="settings-close"]').click();
     await page.locator('[data-testid="join-room-button"]').click();
-    await expect(page.locator('[data-testid="room"]')).toContainText('Bob');
+    await expect(page.locator('[data-testid="room"]')).toContainText('You');
   });
 
   test('has a save button that confirms settings are saved', async ({ page }) => {

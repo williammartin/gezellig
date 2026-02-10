@@ -19,12 +19,14 @@ use tokio::sync::mpsc;
 use crate::audio::{AudioPipeline, DjStatus, NowPlaying};
 
 /// A librespot audio sink that sends PCM bytes through a channel.
+#[allow(dead_code)]
 pub struct ChannelSink {
     sender: mpsc::Sender<Vec<u8>>,
     format: AudioFormat,
 }
 
 impl ChannelSink {
+    #[allow(dead_code)]
     pub fn new(sender: mpsc::Sender<Vec<u8>>, format: AudioFormat) -> Self {
         Self { sender, format }
     }
@@ -59,7 +61,9 @@ impl Sink for ChannelSink {
 pub struct LibrespotPipeline {
     status: Arc<Mutex<DjStatus>>,
     volume: Arc<AtomicU8>,
+    #[allow(dead_code)]
     pcm_receiver: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
+    #[allow(dead_code)]
     pcm_sender: mpsc::Sender<Vec<u8>>,
     shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
@@ -78,16 +82,19 @@ impl LibrespotPipeline {
 
     /// Take the PCM receiver (can only be called once).
     /// Used by the LiveKit audio publisher to consume PCM data.
+    #[allow(dead_code)]
     pub fn take_pcm_receiver(&self) -> Option<mpsc::Receiver<Vec<u8>>> {
         self.pcm_receiver.lock().ok()?.take()
     }
 
     /// Get a clone of the PCM sender for creating sinks.
+    #[allow(dead_code)]
     pub fn pcm_sender(&self) -> mpsc::Sender<Vec<u8>> {
         self.pcm_sender.clone()
     }
 
     /// Get a reference to the status Arc for event handlers.
+    #[allow(dead_code)]
     pub fn status_ref(&self) -> Arc<Mutex<DjStatus>> {
         self.status.clone()
     }
@@ -131,6 +138,7 @@ impl AudioPipeline for LibrespotPipeline {
 }
 
 /// Update the pipeline status (called from event handler).
+#[allow(dead_code)]
 pub fn update_status(status: &Arc<Mutex<DjStatus>>, new_status: DjStatus) {
     if let Ok(mut s) = status.lock() {
         *s = new_status;
@@ -138,6 +146,7 @@ pub fn update_status(status: &Arc<Mutex<DjStatus>>, new_status: DjStatus) {
 }
 
 /// Process a librespot PlayerEvent and update the pipeline status accordingly.
+#[allow(dead_code)]
 pub fn handle_player_event(
     event: &librespot::playback::player::PlayerEvent,
     status: &Arc<Mutex<DjStatus>>,

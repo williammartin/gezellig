@@ -38,12 +38,14 @@ pub trait AudioPipeline: Send + Sync {
 }
 
 /// Stub implementation for development/testing without real Spotify or LiveKit.
+#[allow(dead_code)]
 pub struct StubAudioPipeline {
     status: std::sync::Mutex<DjStatus>,
     volume: std::sync::Mutex<u8>,
 }
 
 impl StubAudioPipeline {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             status: std::sync::Mutex::new(DjStatus::Idle),

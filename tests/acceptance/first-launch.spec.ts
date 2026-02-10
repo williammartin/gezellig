@@ -8,9 +8,8 @@ test.describe('First Launch Setup', () => {
     await expect(setupScreen).toContainText('Welcome to Gezellig');
   });
 
-  test('setup screen has fields for display name, server URL, and token', async ({ page }) => {
+  test('setup screen has fields for server URL and token', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('[data-testid="setup-display-name"]')).toBeVisible();
     await expect(page.locator('[data-testid="setup-livekit-url"]')).toBeVisible();
     await expect(page.locator('[data-testid="setup-token"]')).toBeVisible();
   });
@@ -24,20 +23,21 @@ test.describe('First Launch Setup', () => {
 
   test('completing setup shows the main app', async ({ page }) => {
     await page.goto('/');
-    await page.locator('[data-testid="setup-display-name"]').fill('Alice');
     await page.locator('[data-testid="setup-livekit-url"]').fill('wss://test.livekit.cloud');
-    await page.locator('[data-testid="setup-token"]').fill('eyJ0est-token');
+    const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+    const payload = btoa(JSON.stringify({ sub: 'Alice', name: 'Alice' }));
+    await page.locator('[data-testid="setup-token"]').fill(`${header}.${payload}.sig`);
     await page.locator('[data-testid="setup-connect"]').click();
-    // After setup, should see the main app
     await expect(page.locator('[data-testid="online-users"]')).toBeVisible();
     await expect(page.locator('[data-testid="setup-screen"]')).not.toBeVisible();
   });
 
-  test('display name from setup is used in the app', async ({ page }) => {
+  test('identity from JWT token is used in the app', async ({ page }) => {
     await page.goto('/');
-    await page.locator('[data-testid="setup-display-name"]').fill('Alice');
     await page.locator('[data-testid="setup-livekit-url"]').fill('wss://test.livekit.cloud');
-    await page.locator('[data-testid="setup-token"]').fill('eyJ0est-token');
+    const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+    const payload = btoa(JSON.stringify({ sub: 'Alice', name: 'Alice' }));
+    await page.locator('[data-testid="setup-token"]').fill(`${header}.${payload}.sig`);
     await page.locator('[data-testid="setup-connect"]').click();
     await expect(page.locator('[data-testid="online-users"]')).toContainText('Alice');
   });

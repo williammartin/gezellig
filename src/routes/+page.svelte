@@ -7,7 +7,6 @@
   let roomParticipants: string[] = $state([]);
   let musicVolume = $state(50);
   let showSettings = $state(false);
-  let displayName = $state("");
   let livekitUrl = $state("wss://gezellig-tmbd1vyo.livekit.cloud");
   let livekitToken = $state("");
   let setupComplete = $state(false);
@@ -16,16 +15,28 @@
   let djStatus: { type: string; track?: string; artist?: string } = $state({ type: "Idle" });
   let djStatusPollInterval: ReturnType<typeof setInterval> | null = $state(null);
 
+  function extractIdentityFromToken(token: string): string {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return "Unknown";
+      const payload = JSON.parse(atob(parts[1]));
+      return payload.name || payload.sub || "Unknown";
+    } catch {
+      return "Unknown";
+    }
+  }
+
+  let displayName = $derived(extractIdentityFromToken(livekitToken));
+
   // Check for saved setup on mount
   function checkSavedSetup() {
     try {
       const saved = localStorage.getItem("gezellig-setup");
       if (saved) {
         const data = JSON.parse(saved);
-        displayName = data.displayName || "";
         livekitUrl = data.livekitUrl || "";
         livekitToken = data.livekitToken || "";
-        if (displayName && livekitUrl && livekitToken) {
+        if (livekitUrl && livekitToken) {
           setupComplete = true;
         }
       }
@@ -48,7 +59,6 @@
 
   async function completeSetup() {
     localStorage.setItem("gezellig-setup", JSON.stringify({
-      displayName,
       livekitUrl,
       livekitToken,
     }));
@@ -66,7 +76,6 @@
     livekitConnected = false;
     setupComplete = false;
     showSettings = false;
-    displayName = "";
     livekitUrl = "wss://gezellig-tmbd1vyo.livekit.cloud";
     livekitToken = "";
     inRoom = false;
@@ -75,7 +84,7 @@
     roomParticipants = [];
   }
 
-  let canConnect = $derived(displayName.length > 0 && livekitUrl.length > 0 && livekitToken.length > 0);
+  let canConnect = $derived(livekitUrl.length > 0 && livekitToken.length > 0);
 
   function addNotification(message: string) {
     notifications = [...notifications, message];
@@ -170,10 +179,6 @@
       <h1>Welcome to Gezellig</h1>
       <p>Paste the connection details your admin shared with you.</p>
       <label>
-        Display Name
-        <input data-testid="setup-display-name" type="text" bind:value={displayName} placeholder="Your name" />
-      </label>
-      <label>
         LiveKit Server URL
         <input data-testid="setup-livekit-url" type="text" bind:value={livekitUrl} placeholder="wss://your-server.livekit.cloud" />
       </label>
@@ -221,10 +226,6 @@
       {#if showSettings}
         <div data-testid="settings-panel" class="settings-panel">
           <h2>Settings</h2>
-          <label>
-            Display Name
-            <input data-testid="display-name-input" type="text" bind:value={displayName} />
-          </label>
           <label>
             LiveKit Server URL
             <input data-testid="livekit-url-input" type="text" bind:value={livekitUrl} placeholder="wss://your-server.livekit.cloud" />
