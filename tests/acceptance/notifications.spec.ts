@@ -11,7 +11,7 @@ test.describe('Notifications', () => {
     await page.goto('/');
     await page.locator('[data-testid="join-room-button"]').click();
     const notification = page.locator('[data-testid="notification-area"]');
-    await expect(notification).toContainText('joined the room');
+    await expect(notification).toContainText('You joined the room');
   });
 
   test('shows notification when leaving the room', async ({ page }) => {
@@ -19,7 +19,7 @@ test.describe('Notifications', () => {
     await page.locator('[data-testid="join-room-button"]').click();
     await page.locator('[data-testid="leave-room-button"]').click();
     const notification = page.locator('[data-testid="notification-area"]');
-    await expect(notification).toContainText('left the room');
+    await expect(notification).toContainText('You left the room');
   });
 
   test('shows notification when becoming DJ', async ({ page }) => {
@@ -27,6 +27,6 @@ test.describe('Notifications', () => {
     await page.locator('[data-testid="join-room-button"]').click();
     await page.locator('[data-testid="become-dj-button"]').click();
     const notification = page.locator('[data-testid="notification-area"]');
-    await expect(notification).toContainText('is now the DJ');
+    await expect(notification).toContainText('You are now the DJ');
   });
 });

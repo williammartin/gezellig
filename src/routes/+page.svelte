@@ -26,7 +26,7 @@
       roomParticipants = [displayName];
     }
     inRoom = true;
-    addNotification(`${displayName} joined the room`);
+    addNotification('You joined the room');
   }
 
   async function leaveRoom() {
@@ -38,7 +38,7 @@
     inRoom = false;
     isMuted = false;
     isDJ = false;
-    addNotification(`${displayName} left the room`);
+    addNotification('You left the room');
   }
 
   function toggleMute() {
@@ -47,7 +47,7 @@
 
   function becomeDJ() {
     isDJ = true;
-    addNotification(`${displayName} is now the DJ`);
+    addNotification('You are now the DJ');
   }
 
   function stopDJ() {
