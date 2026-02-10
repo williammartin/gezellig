@@ -14,6 +14,8 @@
   let notifications: string[] = $state([]);
   let djStatus: { type: string; track?: string; artist?: string } = $state({ type: "Idle" });
   let djStatusPollInterval: ReturnType<typeof setInterval> | null = $state(null);
+  let djQueueUrl = $state("");
+  let djQueue: string[] = $state([]);
 
   function extractIdentityFromToken(token: string): string {
     try {
@@ -141,6 +143,29 @@
     }
     isDJ = false;
     djStatus = { type: "Idle" };
+    djQueue = [];
+    djQueueUrl = "";
+  }
+
+  async function addToQueue() {
+    if (!djQueueUrl.trim()) return;
+    const url = djQueueUrl.trim();
+    djQueueUrl = "";
+    try {
+      await invoke("queue_track", { url });
+      djQueue = await invoke<string[]>("get_queue");
+    } catch {
+      // Running outside Tauri
+      djQueue = [...djQueue, url];
+    }
+  }
+
+  async function skipTrack() {
+    try {
+      await invoke("skip_track");
+    } catch {
+      // Running outside Tauri
+    }
   }
 
   function startDjStatusPolling() {
@@ -153,12 +178,17 @@
         } else if (status && typeof status === "object") {
           if (status.Playing) {
             djStatus = { type: "Playing", track: status.Playing.track, artist: status.Playing.artist };
-          } else if (status.WaitingForSpotify !== undefined) {
-            djStatus = { type: "WaitingForSpotify" };
+          } else if (status.Loading !== undefined) {
+            djStatus = { type: "Loading" };
           } else {
             djStatus = { type: "Idle" };
           }
         }
+      } catch {
+        // Outside Tauri
+      }
+      try {
+        djQueue = await invoke<string[]>("get_queue");
       } catch {
         // Outside Tauri
       }
@@ -284,15 +314,32 @@
                 <div data-testid="now-playing" class="now-playing">
                   {#if djStatus.type === "Playing"}
                     🎵 {djStatus.track} — {djStatus.artist}
+                  {:else if djStatus.type === "Loading"}
+                    ⏳ Loading...
                   {:else}
-                    Waiting for Spotify — select "Gezellig DJ" as your device
+                    Add a YouTube URL to get started
                   {/if}
                 </div>
-                <label class="volume-control">
-                  Music Volume
-                  <input data-testid="music-volume" type="range" min="0" max="100" bind:value={musicVolume} />
-                </label>
-                <button data-testid="stop-dj-button" class="btn btn-outline" onclick={stopDJ}>Stop DJ</button>
+                <div class="queue-input">
+                  <input data-testid="queue-url-input" type="text" placeholder="Paste YouTube URL..." bind:value={djQueueUrl} onkeydown={(e) => e.key === 'Enter' && addToQueue()} />
+                  <button data-testid="add-to-queue-button" class="btn" onclick={addToQueue}>Add to Queue</button>
+                </div>
+                {#if djQueue.length > 0}
+                  <div data-testid="dj-queue" class="queue-list">
+                    <p class="queue-label">Queue ({djQueue.length})</p>
+                    {#each djQueue as url, i}
+                      <div class="queue-item">{i + 1}. {url}</div>
+                    {/each}
+                  </div>
+                {/if}
+                <div class="dj-controls">
+                  <button data-testid="skip-track-button" class="btn btn-outline" onclick={skipTrack}>⏭ Skip</button>
+                  <label class="volume-control">
+                    Music Volume
+                    <input data-testid="music-volume" type="range" min="0" max="100" bind:value={musicVolume} />
+                  </label>
+                  <button data-testid="stop-dj-button" class="btn btn-outline" onclick={stopDJ}>Stop DJ</button>
+                </div>
               </div>
             {:else}
               <button data-testid="become-dj-button" class="btn" onclick={becomeDJ}>🎧 Become DJ</button>
@@ -578,6 +625,58 @@ h2 {
   display: block;
   width: 100%;
   margin-top: 0.35rem;
+}
+
+.queue-input {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.queue-input input[type="text"] {
+  flex: 1;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #e5e2df;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  background: #faf9f7;
+}
+
+.queue-list {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.8rem;
+  background: #f7f5f3;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.queue-label {
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: #888;
+  margin: 0 0 0.3rem;
+}
+
+.queue-item {
+  padding: 0.2rem 0;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dj-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.dj-controls .volume-control {
+  flex: 1;
+  min-width: 120px;
+  margin: 0;
 }
 
 /* ---- Settings panel ---- */

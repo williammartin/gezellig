@@ -32,13 +32,13 @@ test.describe('DJ Controls', () => {
     await expect(page.locator('[data-testid="become-dj-button"]')).not.toBeVisible();
   });
 
-  test('shows now playing info when DJ is active', async ({ page }) => {
+  test('shows prompt to add URL when DJ is active', async ({ page }) => {
     await page.goto('/');
     await page.locator('[data-testid="join-room-button"]').click();
     await page.locator('[data-testid="become-dj-button"]').click();
     const nowPlaying = page.locator('[data-testid="now-playing"]');
     await expect(nowPlaying).toBeVisible();
-    await expect(nowPlaying).toContainText('Waiting for Spotify');
+    await expect(nowPlaying).toContainText('Add a YouTube URL');
   });
 
   test('shows music volume control when DJ is active', async ({ page }) => {
@@ -49,12 +49,21 @@ test.describe('DJ Controls', () => {
     await expect(volumeControl).toBeVisible();
   });
 
-  test('shows Gezellig DJ device prompt when waiting for Spotify', async ({ page }) => {
+  test('shows queue URL input when DJ is active', async ({ page }) => {
     await page.goto('/');
     await page.locator('[data-testid="join-room-button"]').click();
     await page.locator('[data-testid="become-dj-button"]').click();
-    const nowPlaying = page.locator('[data-testid="now-playing"]');
-    await expect(nowPlaying).toContainText('Gezellig DJ');
+    await expect(page.locator('[data-testid="queue-url-input"]')).toBeVisible();
+    await expect(page.locator('[data-testid="add-to-queue-button"]')).toBeVisible();
+  });
+
+  test('can add URL to queue', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('[data-testid="join-room-button"]').click();
+    await page.locator('[data-testid="become-dj-button"]').click();
+    await page.locator('[data-testid="queue-url-input"]').fill('https://youtube.com/watch?v=test');
+    await page.locator('[data-testid="add-to-queue-button"]').click();
+    await expect(page.locator('[data-testid="dj-queue"]')).toBeVisible();
   });
 
   test('DJ controls are hidden after stopping DJ', async ({ page }) => {

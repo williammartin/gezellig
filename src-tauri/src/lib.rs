@@ -1,10 +1,10 @@
 mod audio;
 #[allow(dead_code)]
 mod dj_publisher;
-mod librespot_pipeline;
 mod livekit_room;
 mod room;
 mod settings;
+mod youtube_pipeline;
 
 use audio::{AudioPipeline, DjStatus};
 use livekit_room::LiveKitRoom;
@@ -100,6 +100,24 @@ fn get_music_volume(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<u8, 
 }
 
 #[tauri::command]
+fn queue_track(pipeline: State<'_, Mutex<DynAudioPipeline>>, url: String) -> Result<(), String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    p.queue_track(url)
+}
+
+#[tauri::command]
+fn skip_track(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<(), String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    p.skip_track()
+}
+
+#[tauri::command]
+fn get_queue(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<Vec<String>, String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    Ok(p.get_queue())
+}
+
+#[tauri::command]
 async fn livekit_connect(
     lk_room: State<'_, TokioMutex<Option<LiveKitRoom>>>,
     url: String,
@@ -153,7 +171,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(RoomState::new()))
-        .manage(Mutex::new(Box::new(librespot_pipeline::LibrespotPipeline::new()) as DynAudioPipeline))
+        .manage(Mutex::new(Box::new(youtube_pipeline::YouTubePipeline::new()) as DynAudioPipeline))
         .manage(TokioMutex::new(None::<LiveKitRoom>))
         .setup(|app| {
             let app_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -173,6 +191,9 @@ pub fn run() {
             get_dj_status,
             set_music_volume,
             get_music_volume,
+            queue_track,
+            skip_track,
+            get_queue,
             livekit_connect,
             livekit_disconnect,
             livekit_participants,

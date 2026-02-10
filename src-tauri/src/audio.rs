@@ -16,15 +16,15 @@ pub struct NowPlaying {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DjStatus {
     Idle,
-    WaitingForSpotify,
+    Loading,
     Playing(NowPlaying),
 }
 
 pub trait AudioPipeline: Send + Sync {
-    /// Start the Spotify Connect device and begin capturing audio.
+    /// Start the DJ audio pipeline.
     fn start(&self) -> Result<(), String>;
 
-    /// Stop the Spotify Connect device and audio capture.
+    /// Stop the DJ audio pipeline.
     fn stop(&self) -> Result<(), String>;
 
     /// Get the current DJ/playback status.
@@ -35,6 +35,15 @@ pub trait AudioPipeline: Send + Sync {
 
     /// Get the current volume (0-100).
     fn volume(&self) -> u8;
+
+    /// Add a URL to the playback queue.
+    fn queue_track(&self, url: String) -> Result<(), String>;
+
+    /// Skip the currently playing track.
+    fn skip_track(&self) -> Result<(), String>;
+
+    /// Get the current queue (list of URLs/titles).
+    fn get_queue(&self) -> Vec<String>;
 }
 
 /// Stub implementation for development/testing without real Spotify or LiveKit.
@@ -56,7 +65,7 @@ impl StubAudioPipeline {
 
 impl AudioPipeline for StubAudioPipeline {
     fn start(&self) -> Result<(), String> {
-        *self.status.lock().map_err(|e| e.to_string())? = DjStatus::WaitingForSpotify;
+        *self.status.lock().map_err(|e| e.to_string())? = DjStatus::Idle;
         Ok(())
     }
 
@@ -77,6 +86,18 @@ impl AudioPipeline for StubAudioPipeline {
     fn volume(&self) -> u8 {
         *self.volume.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    fn queue_track(&self, _url: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn skip_track(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn get_queue(&self) -> Vec<String> {
+        vec![]
+    }
 }
 
 #[cfg(test)]
@@ -90,10 +111,10 @@ mod tests {
     }
 
     #[test]
-    fn stub_transitions_to_waiting_on_start() {
+    fn stub_stays_idle_on_start() {
         let pipeline = StubAudioPipeline::new();
         pipeline.start().unwrap();
-        assert_eq!(pipeline.status(), DjStatus::WaitingForSpotify);
+        assert_eq!(pipeline.status(), DjStatus::Idle);
     }
 
     #[test]
