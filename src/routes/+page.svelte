@@ -6,12 +6,15 @@
   let isDJ = $state(false);
   let roomParticipants: string[] = $state([]);
   let musicVolume = $state(50);
+  let showSettings = $state(false);
+  let displayName = $state("You");
+  let livekitUrl = $state("");
 
   async function joinRoom() {
     try {
       roomParticipants = await invoke("join_room");
     } catch {
-      roomParticipants = ["You"];
+      roomParticipants = [displayName];
     }
     inRoom = true;
   }
@@ -41,12 +44,30 @@
 </script>
 
 <main class="container">
-  <h1>Gezellig</h1>
+  <header>
+    <h1>Gezellig</h1>
+    <button data-testid="settings-button" onclick={() => showSettings = true}>⚙️</button>
+  </header>
+
+  {#if showSettings}
+    <div data-testid="settings-panel" class="settings-panel">
+      <h2>Settings</h2>
+      <label>
+        Display Name
+        <input data-testid="display-name-input" type="text" bind:value={displayName} />
+      </label>
+      <label>
+        LiveKit Server URL
+        <input data-testid="livekit-url-input" type="text" bind:value={livekitUrl} placeholder="wss://your-server.livekit.cloud" />
+      </label>
+      <button data-testid="settings-close" onclick={() => showSettings = false}>Close</button>
+    </div>
+  {/if}
 
   <section data-testid="online-users">
     <h2>Online</h2>
     <ul>
-      <li>You</li>
+      <li>{displayName}</li>
     </ul>
   </section>
 
@@ -106,6 +127,12 @@
   padding: 2rem;
 }
 
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
 .controls {
   display: flex;
   gap: 0.5rem;
@@ -131,6 +158,28 @@
   margin: 0.5rem 0;
 }
 
+.settings-panel {
+  padding: 1rem;
+  margin: 1rem 0;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.settings-panel label {
+  display: block;
+  margin: 0.5rem 0;
+}
+
+.settings-panel input[type="text"] {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.4em;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
 button {
   border-radius: 8px;
   border: 1px solid transparent;
@@ -154,12 +203,18 @@ button:hover {
   .now-playing {
     background: #444;
   }
-  .dj-section {
+  .dj-section, .settings-panel {
     border-color: #555;
+    background: #333;
   }
   button {
     color: #ffffff;
     background-color: #0f0f0f98;
+  }
+  .settings-panel input[type="text"] {
+    background: #444;
+    color: #f6f6f6;
+    border-color: #555;
   }
 }
 </style>
