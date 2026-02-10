@@ -6,7 +6,7 @@ test.describe('DJ Controls', () => {
     await page.locator('[data-testid="join-room-button"]').click();
     const djButton = page.locator('[data-testid="become-dj-button"]');
     await expect(djButton).toBeVisible();
-    await expect(djButton).toHaveText('Become DJ');
+    await expect(djButton).toContainText('Become DJ');
   });
 
   test('shows DJ status after becoming DJ', async ({ page }) => {

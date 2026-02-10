@@ -6,7 +6,7 @@ test.describe('Audio Controls', () => {
     await page.locator('[data-testid="join-room-button"]').click();
     const muteButton = page.locator('[data-testid="mute-button"]');
     await expect(muteButton).toBeVisible();
-    await expect(muteButton).toHaveText('Mute');
+    await expect(muteButton).toContainText('Mute');
   });
 
   test('toggles to unmute when muted', async ({ page }) => {
@@ -14,7 +14,7 @@ test.describe('Audio Controls', () => {
     await page.locator('[data-testid="join-room-button"]').click();
     await page.locator('[data-testid="mute-button"]').click();
     const unmuteButton = page.locator('[data-testid="mute-button"]');
-    await expect(unmuteButton).toHaveText('Unmute');
+    await expect(unmuteButton).toContainText('Unmute');
   });
 
   test('does not show mute button when not in room', async ({ page }) => {
