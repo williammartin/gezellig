@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 test.describe('Audio Controls', () => {
   test('shows mute button when in the room', async ({ page }) => {

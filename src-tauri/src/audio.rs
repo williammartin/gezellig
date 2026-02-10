@@ -1,9 +1,9 @@
-/// Audio pipeline for routing DJ audio (e.g., from librespot/Spotify Connect)
-/// to a LiveKit room as a dedicated music track.
-///
-/// This module defines the trait interface and a local stub implementation.
-/// The real implementation will use librespot for Spotify Connect and
-/// the LiveKit Rust SDK for publishing audio tracks.
+//! Audio pipeline for routing DJ audio (e.g., from librespot/Spotify Connect)
+//! to a LiveKit room as a dedicated music track.
+//!
+//! This module defines the trait interface and a local stub implementation.
+//! The real implementation will use librespot for Spotify Connect and
+//! the LiveKit Rust SDK for publishing audio tracks.
 
 use serde::{Deserialize, Serialize};
 

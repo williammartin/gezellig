@@ -87,6 +87,12 @@ fn set_music_volume(pipeline: State<'_, Mutex<StubAudioPipeline>>, volume: u8) -
     p.set_volume(volume)
 }
 
+#[tauri::command]
+fn get_music_volume(pipeline: State<'_, Mutex<StubAudioPipeline>>) -> Result<u8, String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    Ok(p.volume())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -110,6 +116,7 @@ pub fn run() {
             stop_dj_audio,
             get_dj_status,
             set_music_volume,
+            get_music_volume,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

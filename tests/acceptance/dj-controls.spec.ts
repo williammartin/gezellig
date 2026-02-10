@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 test.describe('DJ Controls', () => {
   test('shows become DJ button when in the room', async ({ page }) => {

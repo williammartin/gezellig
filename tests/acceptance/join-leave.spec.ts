@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 test.describe('Join/Leave Room', () => {
   test('shows a join button when not in the room', async ({ page }) => {
