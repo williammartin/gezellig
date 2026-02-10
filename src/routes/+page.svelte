@@ -13,6 +13,8 @@
   let setupComplete = $state(false);
   let livekitConnected = $state(false);
   let notifications: string[] = $state([]);
+  let djStatus: { type: string; track?: string; artist?: string } = $state({ type: "Idle" });
+  let djStatusPollInterval: ReturnType<typeof setInterval> | null = $state(null);
 
   // Check for saved setup on mount
   function checkSavedSetup() {
@@ -108,13 +110,57 @@
     isMuted = !isMuted;
   }
 
-  function becomeDJ() {
+  async function becomeDJ() {
     isDJ = true;
     addNotification('You are now the DJ');
+    try {
+      await invoke("become_dj");
+      await invoke("start_dj_audio");
+    } catch {
+      // Running outside Tauri
+    }
+    startDjStatusPolling();
   }
 
-  function stopDJ() {
+  async function stopDJ() {
+    stopDjStatusPolling();
+    try {
+      await invoke("stop_dj_audio");
+      await invoke("stop_dj");
+    } catch {
+      // Running outside Tauri
+    }
     isDJ = false;
+    djStatus = { type: "Idle" };
+  }
+
+  function startDjStatusPolling() {
+    stopDjStatusPolling();
+    djStatusPollInterval = setInterval(async () => {
+      try {
+        const status = await invoke<any>("get_dj_status");
+        if (typeof status === "string") {
+          djStatus = { type: status };
+        } else if (status && typeof status === "object") {
+          if (status.Playing) {
+            djStatus = { type: "Playing", track: status.Playing.track, artist: status.Playing.artist };
+          } else if (status.WaitingForSpotify !== undefined) {
+            djStatus = { type: "WaitingForSpotify" };
+          } else {
+            djStatus = { type: "Idle" };
+          }
+        }
+      } catch {
+        // Outside Tauri
+      }
+    }, 1000);
+  }
+
+  function stopDjStatusPolling() {
+    if (djStatusPollInterval) {
+      clearInterval(djStatusPollInterval);
+      djStatusPollInterval = null;
+    }
   }
 </script>
 
@@ -235,7 +281,11 @@
               <div data-testid="dj-status" class="card dj-section">
                 <p class="dj-label">🎵 You are the DJ</p>
                 <div data-testid="now-playing" class="now-playing">
-                  Waiting for Spotify — select "Gezellig" as your device
+                  {#if djStatus.type === "Playing"}
+                    🎵 {djStatus.track} — {djStatus.artist}
+                  {:else}
+                    Waiting for Spotify — select "Gezellig DJ" as your device
+                  {/if}
                 </div>
                 <label class="volume-control">
                   Music Volume
