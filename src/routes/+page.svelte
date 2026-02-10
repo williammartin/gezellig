@@ -9,6 +9,15 @@
   let showSettings = $state(false);
   let displayName = $state("You");
   let livekitUrl = $state("");
+  let notifications: string[] = $state([]);
+
+  function addNotification(message: string) {
+    notifications = [...notifications, message];
+    // Auto-clear after 5 seconds
+    setTimeout(() => {
+      notifications = notifications.slice(1);
+    }, 5000);
+  }
 
   async function joinRoom() {
     try {
@@ -17,6 +26,7 @@
       roomParticipants = [displayName];
     }
     inRoom = true;
+    addNotification(`${displayName} joined the room`);
   }
 
   async function leaveRoom() {
@@ -28,6 +38,7 @@
     inRoom = false;
     isMuted = false;
     isDJ = false;
+    addNotification(`${displayName} left the room`);
   }
 
   function toggleMute() {
@@ -36,6 +47,7 @@
 
   function becomeDJ() {
     isDJ = true;
+    addNotification(`${displayName} is now the DJ`);
   }
 
   function stopDJ() {
@@ -48,6 +60,12 @@
     <h1>Gezellig</h1>
     <button data-testid="settings-button" onclick={() => showSettings = true}>⚙️</button>
   </header>
+
+  <div data-testid="notification-area" class="notification-area">
+    {#each notifications as notification}
+      <p class="notification">{notification}</p>
+    {/each}
+  </div>
 
   {#if showSettings}
     <div data-testid="settings-panel" class="settings-panel">
@@ -179,6 +197,18 @@ header {
   padding: 0.4em;
   border: 1px solid #ccc;
   border-radius: 4px;
+}
+
+.notification-area {
+  min-height: 1.5rem;
+}
+
+.notification {
+  padding: 0.3em 0.6em;
+  margin: 0.25rem 0;
+  background: #e8f4e8;
+  border-radius: 4px;
+  font-size: 0.9em;
 }
 
 button {
