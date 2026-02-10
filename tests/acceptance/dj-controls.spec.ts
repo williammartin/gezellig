@@ -48,4 +48,23 @@ test.describe('DJ Controls', () => {
     const volumeControl = page.locator('[data-testid="music-volume"]');
     await expect(volumeControl).toBeVisible();
   });
+
+  test('shows Gezellig DJ device prompt when waiting for Spotify', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('[data-testid="join-room-button"]').click();
+    await page.locator('[data-testid="become-dj-button"]').click();
+    const nowPlaying = page.locator('[data-testid="now-playing"]');
+    await expect(nowPlaying).toContainText('Gezellig DJ');
+  });
+
+  test('DJ controls are hidden after stopping DJ', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('[data-testid="join-room-button"]').click();
+    await page.locator('[data-testid="become-dj-button"]').click();
+    await expect(page.locator('[data-testid="dj-status"]')).toBeVisible();
+    await page.locator('[data-testid="stop-dj-button"]').click();
+    await expect(page.locator('[data-testid="dj-status"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="now-playing"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="music-volume"]')).not.toBeVisible();
+  });
 });
