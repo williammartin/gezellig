@@ -86,6 +86,11 @@ impl LibrespotPipeline {
     pub fn pcm_sender(&self) -> mpsc::Sender<Vec<u8>> {
         self.pcm_sender.clone()
     }
+
+    /// Get a reference to the status Arc for event handlers.
+    pub fn status_ref(&self) -> Arc<Mutex<DjStatus>> {
+        self.status.clone()
+    }
 }
 
 impl AudioPipeline for LibrespotPipeline {
@@ -129,6 +134,44 @@ impl AudioPipeline for LibrespotPipeline {
 pub fn update_status(status: &Arc<Mutex<DjStatus>>, new_status: DjStatus) {
     if let Ok(mut s) = status.lock() {
         *s = new_status;
+    }
+}
+
+/// Process a librespot PlayerEvent and update the pipeline status accordingly.
+pub fn handle_player_event(
+    event: &librespot::playback::player::PlayerEvent,
+    status: &Arc<Mutex<DjStatus>>,
+) {
+    use librespot::metadata::audio::UniqueFields;
+    use librespot::playback::player::PlayerEvent;
+
+    match event {
+        PlayerEvent::TrackChanged { audio_item } => {
+            let artist = match &audio_item.unique_fields {
+                UniqueFields::Track { artists, .. } => {
+                    artists.0.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+                }
+                UniqueFields::Episode { show_name, .. } => show_name.clone(),
+                UniqueFields::Local { artists, .. } => {
+                    artists.clone().unwrap_or_else(|| "Unknown".to_string())
+                }
+            };
+            update_status(
+                status,
+                DjStatus::Playing(NowPlaying {
+                    track: audio_item.name.clone(),
+                    artist,
+                }),
+            );
+        }
+        PlayerEvent::Stopped { .. } | PlayerEvent::Paused { .. } => {
+            update_status(status, DjStatus::WaitingForSpotify);
+        }
+        PlayerEvent::Playing { .. } => {
+            // If we get a Playing event but status is WaitingForSpotify,
+            // we don't have track info yet — TrackChanged will follow.
+        }
+        _ => {}
     }
 }
 
