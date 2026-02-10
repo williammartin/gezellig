@@ -60,6 +60,7 @@
         LiveKit Server URL
         <input data-testid="livekit-url-input" type="text" bind:value={livekitUrl} placeholder="wss://your-server.livekit.cloud" />
       </label>
+      <button data-testid="settings-save" onclick={() => showSettings = false}>Save</button>
       <button data-testid="settings-close" onclick={() => showSettings = false}>Close</button>
     </div>
   {/if}
