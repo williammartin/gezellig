@@ -1,4 +1,5 @@
 mod audio;
+mod dj_publisher;
 mod librespot_pipeline;
 mod livekit_room;
 mod room;
