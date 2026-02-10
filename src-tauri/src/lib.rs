@@ -1,6 +1,8 @@
+mod audio;
 mod room;
 mod settings;
 
+use audio::{AudioPipeline, DjStatus, StubAudioPipeline};
 use room::RoomState;
 use settings::Settings;
 use std::sync::Mutex;
@@ -60,11 +62,37 @@ fn load_settings(settings_path: State<'_, SettingsPath>) -> Result<Settings, Str
     Ok(Settings::load(&settings_path.0))
 }
 
+#[tauri::command]
+fn start_dj_audio(pipeline: State<'_, Mutex<StubAudioPipeline>>) -> Result<String, String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    p.start()?;
+    Ok(format!("{:?}", p.status()))
+}
+
+#[tauri::command]
+fn stop_dj_audio(pipeline: State<'_, Mutex<StubAudioPipeline>>) -> Result<(), String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    p.stop()
+}
+
+#[tauri::command]
+fn get_dj_status(pipeline: State<'_, Mutex<StubAudioPipeline>>) -> Result<DjStatus, String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    Ok(p.status())
+}
+
+#[tauri::command]
+fn set_music_volume(pipeline: State<'_, Mutex<StubAudioPipeline>>, volume: u8) -> Result<(), String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    p.set_volume(volume)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(RoomState::new()))
+        .manage(Mutex::new(StubAudioPipeline::new()))
         .setup(|app| {
             let app_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
             app.manage(SettingsPath(app_dir.join("settings.json")));
@@ -78,6 +106,10 @@ pub fn run() {
             stop_dj,
             save_settings,
             load_settings,
+            start_dj_audio,
+            stop_dj_audio,
+            get_dj_status,
+            set_music_volume,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
