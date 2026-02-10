@@ -26,6 +26,7 @@ livekit = "0.7"
 librespot = { git = "https://github.com/librespot-org/librespot" }
 tokio = { version = "1.49.0", features = ["full"] }
 log = "0.4.29"
+zerocopy = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
