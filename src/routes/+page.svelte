@@ -11,6 +11,7 @@
   let livekitUrl = $state("");
   let livekitToken = $state("");
   let setupComplete = $state(false);
+  let livekitConnected = $state(false);
   let notifications: string[] = $state([]);
 
   // Check for saved setup on mount
@@ -33,13 +34,24 @@
 
   checkSavedSetup();
 
-  function completeSetup() {
+  async function connectToLiveKit() {
+    try {
+      await invoke("livekit_connect", { url: livekitUrl, token: livekitToken });
+      livekitConnected = true;
+      addNotification('Connected to LiveKit');
+    } catch {
+      // Running outside Tauri or connection failed — continue in local mode
+    }
+  }
+
+  async function completeSetup() {
     localStorage.setItem("gezellig-setup", JSON.stringify({
       displayName,
       livekitUrl,
       livekitToken,
     }));
     setupComplete = true;
+    await connectToLiveKit();
   }
 
   let canConnect = $derived(displayName.length > 0 && livekitUrl.length > 0 && livekitToken.length > 0);
@@ -111,7 +123,12 @@
   <main class="container">
     <header>
       <h1>Gezellig</h1>
-      <button data-testid="settings-button" onclick={() => showSettings = true}>⚙️</button>
+      <div>
+        <span data-testid="connection-status" class="connection-status {livekitConnected ? 'connected' : 'local'}">
+          {livekitConnected ? '🟢' : '🔴'}
+        </span>
+        <button data-testid="settings-button" onclick={() => showSettings = true}>⚙️</button>
+      </div>
     </header>
 
     <div data-testid="notification-area" class="notification-area">
