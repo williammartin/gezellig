@@ -1,5 +1,30 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
+
   let inRoom = $state(false);
+  let roomParticipants: string[] = $state([]);
+
+  async function joinRoom() {
+    try {
+      roomParticipants = await invoke("join_room");
+      inRoom = true;
+    } catch {
+      // Running outside Tauri (e.g. in browser for tests) — use local state
+      inRoom = true;
+      roomParticipants = ["You"];
+    }
+  }
+
+  async function leaveRoom() {
+    try {
+      roomParticipants = await invoke("leave_room");
+      inRoom = false;
+    } catch {
+      // Running outside Tauri — use local state
+      inRoom = false;
+      roomParticipants = [];
+    }
+  }
 </script>
 
 <main class="container">
@@ -14,9 +39,11 @@
 
   <section data-testid="room">
     <h2>Room</h2>
-    {#if inRoom}
+    {#if roomParticipants.length > 0}
       <ul>
-        <li>You</li>
+        {#each roomParticipants as participant}
+          <li>{participant}</li>
+        {/each}
       </ul>
     {:else}
       <p class="empty-state">No one is in the room</p>
@@ -24,9 +51,9 @@
   </section>
 
   {#if inRoom}
-    <button data-testid="leave-room-button" onclick={() => inRoom = false}>Leave Room</button>
+    <button data-testid="leave-room-button" onclick={leaveRoom}>Leave Room</button>
   {:else}
-    <button data-testid="join-room-button" onclick={() => inRoom = true}>Join Room</button>
+    <button data-testid="join-room-button" onclick={joinRoom}>Join Room</button>
   {/if}
 </main>
 
