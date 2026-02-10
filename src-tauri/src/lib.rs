@@ -15,6 +15,8 @@ use tokio::sync::Mutex as TokioMutex;
 
 struct SettingsPath(std::path::PathBuf);
 
+type DynAudioPipeline = Box<dyn AudioPipeline>;
+
 #[tauri::command]
 fn join_room(state: State<'_, Mutex<RoomState>>) -> Result<Vec<String>, String> {
     let mut room = state.lock().map_err(|e| e.to_string())?;
@@ -68,32 +70,32 @@ fn load_settings(settings_path: State<'_, SettingsPath>) -> Result<Settings, Str
 }
 
 #[tauri::command]
-fn start_dj_audio(pipeline: State<'_, Mutex<StubAudioPipeline>>) -> Result<String, String> {
+fn start_dj_audio(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<String, String> {
     let p = pipeline.lock().map_err(|e| e.to_string())?;
     p.start()?;
     Ok(format!("{:?}", p.status()))
 }
 
 #[tauri::command]
-fn stop_dj_audio(pipeline: State<'_, Mutex<StubAudioPipeline>>) -> Result<(), String> {
+fn stop_dj_audio(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<(), String> {
     let p = pipeline.lock().map_err(|e| e.to_string())?;
     p.stop()
 }
 
 #[tauri::command]
-fn get_dj_status(pipeline: State<'_, Mutex<StubAudioPipeline>>) -> Result<DjStatus, String> {
+fn get_dj_status(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<DjStatus, String> {
     let p = pipeline.lock().map_err(|e| e.to_string())?;
     Ok(p.status())
 }
 
 #[tauri::command]
-fn set_music_volume(pipeline: State<'_, Mutex<StubAudioPipeline>>, volume: u8) -> Result<(), String> {
+fn set_music_volume(pipeline: State<'_, Mutex<DynAudioPipeline>>, volume: u8) -> Result<(), String> {
     let p = pipeline.lock().map_err(|e| e.to_string())?;
     p.set_volume(volume)
 }
 
 #[tauri::command]
-fn get_music_volume(pipeline: State<'_, Mutex<StubAudioPipeline>>) -> Result<u8, String> {
+fn get_music_volume(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<u8, String> {
     let p = pipeline.lock().map_err(|e| e.to_string())?;
     Ok(p.volume())
 }
@@ -149,7 +151,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(RoomState::new()))
-        .manage(Mutex::new(StubAudioPipeline::new()))
+        .manage(Mutex::new(Box::new(librespot_pipeline::LibrespotPipeline::new()) as DynAudioPipeline))
         .manage(TokioMutex::new(None::<LiveKitRoom>))
         .setup(|app| {
             let app_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
