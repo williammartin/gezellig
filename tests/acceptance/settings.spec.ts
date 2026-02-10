@@ -61,4 +61,27 @@ test.describe('Settings', () => {
     await expect(saveButton).toBeVisible();
     await expect(saveButton).toHaveText('Save');
   });
+
+  test('shows a reset button to clear stored config', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('[data-testid="settings-button"]').click();
+    const resetButton = page.locator('[data-testid="settings-reset"]');
+    await expect(resetButton).toBeVisible();
+    await expect(resetButton).toHaveText('Reset & Sign Out');
+  });
+
+  test('reset clears config and returns to setup screen', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('[data-testid="settings-button"]').click();
+    await page.locator('[data-testid="settings-reset"]').click();
+    await expect(page.locator('[data-testid="setup-screen"]')).toBeVisible();
+    await expect(page.locator('[data-testid="settings-panel"]')).not.toBeVisible();
+  });
+
+  test('shows token field in settings', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('[data-testid="settings-button"]').click();
+    const tokenField = page.locator('[data-testid="settings-token"]');
+    await expect(tokenField).toBeVisible();
+  });
 });

@@ -54,6 +54,25 @@
     await connectToLiveKit();
   }
 
+  async function resetConfig() {
+    try {
+      await invoke("livekit_disconnect");
+    } catch {
+      // Running outside Tauri
+    }
+    localStorage.removeItem("gezellig-setup");
+    livekitConnected = false;
+    setupComplete = false;
+    showSettings = false;
+    displayName = "";
+    livekitUrl = "wss://gezellig-tmbd1vyo.livekit.cloud";
+    livekitToken = "";
+    inRoom = false;
+    isMuted = false;
+    isDJ = false;
+    roomParticipants = [];
+  }
+
   let canConnect = $derived(displayName.length > 0 && livekitUrl.length > 0 && livekitToken.length > 0);
 
   function addNotification(message: string) {
@@ -148,8 +167,13 @@
           LiveKit Server URL
           <input data-testid="livekit-url-input" type="text" bind:value={livekitUrl} placeholder="wss://your-server.livekit.cloud" />
         </label>
+        <label>
+          Token
+          <textarea data-testid="settings-token" bind:value={livekitToken} rows="2"></textarea>
+        </label>
         <button data-testid="settings-save" onclick={() => showSettings = false}>Save</button>
         <button data-testid="settings-close" onclick={() => showSettings = false}>Close</button>
+        <button data-testid="settings-reset" class="danger" onclick={resetConfig}>Reset & Sign Out</button>
       </div>
     {/if}
 
@@ -326,6 +350,17 @@ button {
 
 button:hover {
   border-color: #396cd8;
+}
+
+button.danger {
+  background-color: #dc3545;
+  color: white;
+  margin-top: 1rem;
+}
+
+button.danger:hover {
+  background-color: #c82333;
+  border-color: #c82333;
 }
 
 @media (prefers-color-scheme: dark) {
