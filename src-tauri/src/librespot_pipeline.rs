@@ -8,25 +8,34 @@ use std::sync::{
     Arc, Mutex,
 };
 
+use futures_util::StreamExt;
+use librespot::core::{
+    config::SessionConfig,
+    session::Session,
+};
+use librespot::discovery::Discovery;
 use librespot::playback::{
     audio_backend::{Sink, SinkResult},
-    config::AudioFormat,
+    config::{AudioFormat, PlayerConfig},
     convert::Converter,
     decoder::AudioPacket,
+    mixer::NoOpVolume,
+    player::Player,
 };
 use tokio::sync::mpsc;
 
 use crate::audio::{AudioPipeline, DjStatus, NowPlaying};
 
+const DEVICE_NAME: &str = "Gezellig DJ";
+
 /// A librespot audio sink that sends PCM bytes through a channel.
-#[allow(dead_code)]
 pub struct ChannelSink {
     sender: mpsc::Sender<Vec<u8>>,
+    #[allow(dead_code)]
     format: AudioFormat,
 }
 
 impl ChannelSink {
-    #[allow(dead_code)]
     pub fn new(sender: mpsc::Sender<Vec<u8>>, format: AudioFormat) -> Self {
         Self { sender, format }
     }
@@ -61,9 +70,7 @@ impl Sink for ChannelSink {
 pub struct LibrespotPipeline {
     status: Arc<Mutex<DjStatus>>,
     volume: Arc<AtomicU8>,
-    #[allow(dead_code)]
     pcm_receiver: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
-    #[allow(dead_code)]
     pcm_sender: mpsc::Sender<Vec<u8>>,
     shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
@@ -102,11 +109,30 @@ impl LibrespotPipeline {
 
 impl AudioPipeline for LibrespotPipeline {
     fn start(&self) -> Result<(), String> {
-        let mut status = self.status.lock().map_err(|e| e.to_string())?;
-        *status = DjStatus::WaitingForSpotify;
+        {
+            let mut status = self.status.lock().map_err(|e| e.to_string())?;
+            *status = DjStatus::WaitingForSpotify;
+        }
 
-        // Librespot session will be spawned by the Tauri command layer
-        // which has access to the tokio runtime.
+        // Only spawn librespot if running inside a tokio runtime (not in unit tests)
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+            {
+                let mut tx_guard = self.shutdown_tx.lock().map_err(|e| e.to_string())?;
+                *tx_guard = Some(shutdown_tx);
+            }
+
+            let pcm_sender = self.pcm_sender.clone();
+            let status = self.status.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = run_librespot(pcm_sender, status.clone(), &mut shutdown_rx).await {
+                    log::error!("Librespot error: {e}");
+                    update_status(&status, DjStatus::Idle);
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -137,8 +163,83 @@ impl AudioPipeline for LibrespotPipeline {
     }
 }
 
+/// Run the librespot Zeroconf discovery + player loop.
+async fn run_librespot(
+    pcm_sender: mpsc::Sender<Vec<u8>>,
+    status: Arc<Mutex<DjStatus>>,
+    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+) -> Result<(), String> {
+    let session_config = SessionConfig::default();
+    let device_id = session_config.device_id.clone();
+    let client_id = session_config.client_id.clone();
+
+    let mut discovery = Discovery::builder(device_id, client_id)
+        .name(DEVICE_NAME)
+        .launch()
+        .map_err(|e| format!("Failed to start Zeroconf discovery: {e}"))?;
+
+    log::info!("Spotify Connect device '{DEVICE_NAME}' is now discoverable");
+
+    // Wait for Spotify to connect and provide credentials
+    let credentials = loop {
+        tokio::select! {
+            _ = &mut *shutdown_rx => {
+                log::info!("Librespot shutdown requested during discovery");
+                return Ok(());
+            }
+            item = discovery.next() => {
+                match item {
+                    Some(creds) => break creds,
+                    None => return Err("Discovery stream ended without credentials".to_string()),
+                }
+            }
+        }
+    };
+
+    log::info!("Spotify credentials received, connecting session...");
+
+    let session = Session::new(SessionConfig::default(), None);
+    session
+        .connect(credentials, true)
+        .await
+        .map_err(|e| format!("Failed to connect session: {e}"))?;
+
+    log::info!("Spotify session connected, starting player...");
+
+    let player_config = PlayerConfig::default();
+    let sender = pcm_sender.clone();
+    let player = Player::new(
+        player_config,
+        session,
+        Box::new(NoOpVolume),
+        move || Box::new(ChannelSink::new(sender.clone(), AudioFormat::S16)),
+    );
+
+    let mut event_channel = player.get_player_event_channel();
+
+    // Process player events until shutdown
+    loop {
+        tokio::select! {
+            _ = &mut *shutdown_rx => {
+                log::info!("Librespot shutdown requested");
+                break;
+            }
+            event = event_channel.recv() => {
+                match event {
+                    Some(event) => handle_player_event(&event, &status),
+                    None => {
+                        log::info!("Player event channel closed");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Update the pipeline status (called from event handler).
-#[allow(dead_code)]
 pub fn update_status(status: &Arc<Mutex<DjStatus>>, new_status: DjStatus) {
     if let Ok(mut s) = status.lock() {
         *s = new_status;
@@ -146,7 +247,6 @@ pub fn update_status(status: &Arc<Mutex<DjStatus>>, new_status: DjStatus) {
 }
 
 /// Process a librespot PlayerEvent and update the pipeline status accordingly.
-#[allow(dead_code)]
 pub fn handle_player_event(
     event: &librespot::playback::player::PlayerEvent,
     status: &Arc<Mutex<DjStatus>>,
