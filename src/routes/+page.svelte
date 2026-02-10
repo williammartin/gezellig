@@ -2,28 +2,41 @@
   import { invoke } from "@tauri-apps/api/core";
 
   let inRoom = $state(false);
+  let isMuted = $state(false);
+  let isDJ = $state(false);
   let roomParticipants: string[] = $state([]);
+  let musicVolume = $state(50);
 
   async function joinRoom() {
     try {
       roomParticipants = await invoke("join_room");
-      inRoom = true;
     } catch {
-      // Running outside Tauri (e.g. in browser for tests) — use local state
-      inRoom = true;
       roomParticipants = ["You"];
     }
+    inRoom = true;
   }
 
   async function leaveRoom() {
     try {
       roomParticipants = await invoke("leave_room");
-      inRoom = false;
     } catch {
-      // Running outside Tauri — use local state
-      inRoom = false;
       roomParticipants = [];
     }
+    inRoom = false;
+    isMuted = false;
+    isDJ = false;
+  }
+
+  function toggleMute() {
+    isMuted = !isMuted;
+  }
+
+  function becomeDJ() {
+    isDJ = true;
+  }
+
+  function stopDJ() {
+    isDJ = false;
   }
 </script>
 
@@ -51,109 +64,86 @@
   </section>
 
   {#if inRoom}
-    <button data-testid="leave-room-button" onclick={leaveRoom}>Leave Room</button>
+    <div class="controls">
+      <button data-testid="mute-button" onclick={toggleMute}>
+        {isMuted ? 'Unmute' : 'Mute'}
+      </button>
+      <button data-testid="leave-room-button" onclick={leaveRoom}>Leave Room</button>
+    </div>
+
+    {#if isDJ}
+      <div data-testid="dj-status" class="dj-section">
+        <p>🎵 You are the DJ</p>
+        <div data-testid="now-playing" class="now-playing">
+          Waiting for Spotify — select "Gezellig" as your device
+        </div>
+        <label class="volume-control">
+          Music Volume
+          <input data-testid="music-volume" type="range" min="0" max="100" bind:value={musicVolume} />
+        </label>
+        <button data-testid="stop-dj-button" onclick={stopDJ}>Stop DJ</button>
+      </div>
+    {:else}
+      <button data-testid="become-dj-button" onclick={becomeDJ}>Become DJ</button>
+    {/if}
   {:else}
     <button data-testid="join-room-button" onclick={joinRoom}>Join Room</button>
   {/if}
 </main>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   font-size: 16px;
   line-height: 24px;
-  font-weight: 400;
-
   color: #0f0f0f;
   background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
 }
 
 .container {
-  margin: 0;
-  padding-top: 10vh;
+  margin: 0 auto;
+  max-width: 600px;
+  padding: 2rem;
+}
+
+.controls {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
+  gap: 0.5rem;
+  margin: 1rem 0;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
+.dj-section {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #ccc;
+  border-radius: 8px;
 }
 
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
+.now-playing {
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+  background: #eee;
+  border-radius: 4px;
 }
 
-.row {
-  display: flex;
-  justify-content: center;
+.volume-control {
+  display: block;
+  margin: 0.5rem 0;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
 button {
   border-radius: 8px;
   border: 1px solid transparent;
   padding: 0.6em 1.2em;
   font-size: 1em;
   font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
   cursor: pointer;
+  background-color: #ffffff;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
 }
 
 button:hover {
   border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -161,19 +151,15 @@ button {
     color: #f6f6f6;
     background-color: #2f2f2f;
   }
-
-  a:hover {
-    color: #24c8db;
+  .now-playing {
+    background: #444;
   }
-
-  input,
+  .dj-section {
+    border-color: #555;
+  }
   button {
     color: #ffffff;
     background-color: #0f0f0f98;
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
 }
-
 </style>

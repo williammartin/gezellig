@@ -1,11 +1,13 @@
 pub struct RoomState {
     participants: Vec<String>,
+    dj: Option<String>,
 }
 
 impl RoomState {
     pub fn new() -> Self {
         Self {
             participants: Vec::new(),
+            dj: None,
         }
     }
 
@@ -17,10 +19,31 @@ impl RoomState {
 
     pub fn leave(&mut self, name: &str) {
         self.participants.retain(|p| p != name);
+        if self.dj.as_deref() == Some(name) {
+            self.dj = None;
+        }
     }
 
     pub fn participants(&self) -> &[String] {
         &self.participants
+    }
+
+    pub fn become_dj(&mut self, name: String) -> Result<(), String> {
+        if !self.participants.contains(&name) {
+            return Err("Must be in the room to become DJ".to_string());
+        }
+        self.dj = Some(name);
+        Ok(())
+    }
+
+    pub fn stop_dj(&mut self, name: &str) {
+        if self.dj.as_deref() == Some(name) {
+            self.dj = None;
+        }
+    }
+
+    pub fn current_dj(&self) -> Option<&str> {
+        self.dj.as_deref()
     }
 }
 
@@ -72,5 +95,53 @@ mod tests {
         assert_eq!(room.participants(), &["Alice", "Bob"]);
         room.leave("Alice");
         assert_eq!(room.participants(), &["Bob"]);
+    }
+
+    #[test]
+    fn no_dj_initially() {
+        let room = RoomState::new();
+        assert!(room.current_dj().is_none());
+    }
+
+    #[test]
+    fn become_dj() {
+        let mut room = RoomState::new();
+        room.join("Alice".to_string());
+        room.become_dj("Alice".to_string()).unwrap();
+        assert_eq!(room.current_dj(), Some("Alice"));
+    }
+
+    #[test]
+    fn cannot_become_dj_without_joining() {
+        let mut room = RoomState::new();
+        assert!(room.become_dj("Alice".to_string()).is_err());
+    }
+
+    #[test]
+    fn stop_dj() {
+        let mut room = RoomState::new();
+        room.join("Alice".to_string());
+        room.become_dj("Alice".to_string()).unwrap();
+        room.stop_dj("Alice");
+        assert!(room.current_dj().is_none());
+    }
+
+    #[test]
+    fn leaving_clears_dj() {
+        let mut room = RoomState::new();
+        room.join("Alice".to_string());
+        room.become_dj("Alice".to_string()).unwrap();
+        room.leave("Alice");
+        assert!(room.current_dj().is_none());
+    }
+
+    #[test]
+    fn new_dj_replaces_old() {
+        let mut room = RoomState::new();
+        room.join("Alice".to_string());
+        room.join("Bob".to_string());
+        room.become_dj("Alice".to_string()).unwrap();
+        room.become_dj("Bob".to_string()).unwrap();
+        assert_eq!(room.current_dj(), Some("Bob"));
     }
 }

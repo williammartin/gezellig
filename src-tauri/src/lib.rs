@@ -24,6 +24,20 @@ fn get_room_participants(state: State<'_, Mutex<RoomState>>) -> Result<Vec<Strin
     Ok(room.participants().to_vec())
 }
 
+#[tauri::command]
+fn become_dj(state: State<'_, Mutex<RoomState>>) -> Result<Option<String>, String> {
+    let mut room = state.lock().map_err(|e| e.to_string())?;
+    room.become_dj("You".to_string())?;
+    Ok(room.current_dj().map(|s| s.to_string()))
+}
+
+#[tauri::command]
+fn stop_dj(state: State<'_, Mutex<RoomState>>) -> Result<(), String> {
+    let mut room = state.lock().map_err(|e| e.to_string())?;
+    room.stop_dj("You");
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -33,6 +47,8 @@ pub fn run() {
             join_room,
             leave_room,
             get_room_participants,
+            become_dj,
+            stop_dj,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
