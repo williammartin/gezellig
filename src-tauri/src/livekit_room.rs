@@ -190,7 +190,10 @@ mod tests {
 
     #[test]
     fn new_room_is_not_connected() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(err) => panic!("failed to create runtime: {err}"),
+        };
         rt.block_on(async {
             let room = LiveKitRoom::new(
                 "wss://test.livekit.cloud".to_string(),

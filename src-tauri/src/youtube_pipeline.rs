@@ -624,19 +624,23 @@ mod tests {
     #[test]
     fn pipeline_start_activates() {
         let pipeline = YouTubePipeline::new();
-        pipeline.start().unwrap();
-        assert!(*pipeline.active.lock().unwrap());
+        assert!(pipeline.start().is_ok());
+        let active = match pipeline.active.lock() {
+            Ok(active) => *active,
+            Err(err) => err.into_inner().clone(),
+        };
+        assert!(active);
     }
 
     #[test]
     fn pipeline_stop_deactivates_and_clears_queue() {
         let pipeline = YouTubePipeline::new();
-        pipeline.start().unwrap();
+        assert!(pipeline.start().is_ok());
         pipeline
             .queue_track("https://youtube.com/watch?v=test".to_string())
-            .unwrap();
+            .unwrap_or_else(|e| panic!("queue_track failed: {e}"));
         assert_eq!(pipeline.get_queue().len(), 1);
-        pipeline.stop().unwrap();
+        assert!(pipeline.stop().is_ok());
         assert_eq!(pipeline.status(), DjStatus::Idle);
         assert_eq!(pipeline.get_queue().len(), 0);
     }
@@ -650,14 +654,14 @@ mod tests {
     #[test]
     fn pipeline_set_volume() {
         let pipeline = YouTubePipeline::new();
-        pipeline.set_volume(75).unwrap();
+        assert!(pipeline.set_volume(75).is_ok());
         assert_eq!(pipeline.volume(), 75);
     }
 
     #[test]
     fn pipeline_volume_caps_at_100() {
         let pipeline = YouTubePipeline::new();
-        pipeline.set_volume(150).unwrap();
+        assert!(pipeline.set_volume(150).is_ok());
         assert_eq!(pipeline.volume(), 100);
     }
 
@@ -666,10 +670,10 @@ mod tests {
         let pipeline = YouTubePipeline::new();
         pipeline
             .queue_track("https://youtube.com/watch?v=abc".to_string())
-            .unwrap();
+            .unwrap_or_else(|e| panic!("queue_track failed: {e}"));
         pipeline
             .queue_track("https://youtube.com/watch?v=def".to_string())
-            .unwrap();
+            .unwrap_or_else(|e| panic!("queue_track failed: {e}"));
         let queue = pipeline.get_queue();
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0], "https://youtube.com/watch?v=abc");

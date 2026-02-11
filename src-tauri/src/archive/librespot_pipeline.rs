@@ -308,15 +308,15 @@ mod tests {
     #[test]
     fn pipeline_transitions_to_waiting_on_start() {
         let pipeline = LibrespotPipeline::new();
-        pipeline.start().unwrap();
+        assert!(pipeline.start().is_ok());
         assert_eq!(pipeline.status(), DjStatus::WaitingForSpotify);
     }
 
     #[test]
     fn pipeline_transitions_to_idle_on_stop() {
         let pipeline = LibrespotPipeline::new();
-        pipeline.start().unwrap();
-        pipeline.stop().unwrap();
+        assert!(pipeline.start().is_ok());
+        assert!(pipeline.stop().is_ok());
         assert_eq!(pipeline.status(), DjStatus::Idle);
     }
 
@@ -329,14 +329,14 @@ mod tests {
     #[test]
     fn pipeline_set_volume() {
         let pipeline = LibrespotPipeline::new();
-        pipeline.set_volume(75).unwrap();
+        assert!(pipeline.set_volume(75).is_ok());
         assert_eq!(pipeline.volume(), 75);
     }
 
     #[test]
     fn pipeline_volume_caps_at_100() {
         let pipeline = LibrespotPipeline::new();
-        pipeline.set_volume(150).unwrap();
+        assert!(pipeline.set_volume(150).is_ok());
         assert_eq!(pipeline.volume(), 100);
     }
 
@@ -349,7 +349,10 @@ mod tests {
 
     #[test]
     fn channel_sink_sends_pcm_bytes() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(err) => panic!("failed to create runtime: {err}"),
+        };
         rt.block_on(async {
             let (tx, mut rx) = mpsc::channel(16);
             let mut sink = ChannelSink::new(tx, AudioFormat::S16);
@@ -358,9 +361,12 @@ mod tests {
             // Create a simple AudioPacket with f64 samples
             let samples = vec![0.5_f64, -0.5, 0.0, 1.0];
             let packet = AudioPacket::Samples(samples);
-            sink.write(packet, &mut converter).unwrap();
+            assert!(sink.write(packet, &mut converter).is_ok());
 
-            let received = rx.recv().await.unwrap();
+            let received = match rx.recv().await {
+                Some(received) => received,
+                None => panic!("failed to receive pcm bytes"),
+            };
             // Should have received i16 bytes (4 samples × 2 bytes each = 8 bytes)
             assert_eq!(received.len(), 8);
         });
@@ -376,9 +382,12 @@ mod tests {
                 artist: "Test Artist".to_string(),
             }),
         );
-        let s = status.lock().unwrap();
+        let status_value = match status.lock() {
+            Ok(status_value) => status_value.clone(),
+            Err(err) => err.into_inner().clone(),
+        };
         assert_eq!(
-            *s,
+            status_value,
             DjStatus::Playing(NowPlaying {
                 track: "Test Song".to_string(),
                 artist: "Test Artist".to_string(),

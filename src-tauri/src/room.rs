@@ -107,7 +107,7 @@ mod tests {
     fn become_dj() {
         let mut room = RoomState::new();
         room.join("Alice".to_string());
-        room.become_dj("Alice".to_string()).unwrap();
+        assert!(room.become_dj("Alice".to_string()).is_ok());
         assert_eq!(room.current_dj(), Some("Alice"));
     }
 
@@ -121,7 +121,7 @@ mod tests {
     fn stop_dj() {
         let mut room = RoomState::new();
         room.join("Alice".to_string());
-        room.become_dj("Alice".to_string()).unwrap();
+        assert!(room.become_dj("Alice".to_string()).is_ok());
         room.stop_dj("Alice");
         assert!(room.current_dj().is_none());
     }
@@ -130,7 +130,7 @@ mod tests {
     fn leaving_clears_dj() {
         let mut room = RoomState::new();
         room.join("Alice".to_string());
-        room.become_dj("Alice".to_string()).unwrap();
+        assert!(room.become_dj("Alice".to_string()).is_ok());
         room.leave("Alice");
         assert!(room.current_dj().is_none());
     }
@@ -140,8 +140,8 @@ mod tests {
         let mut room = RoomState::new();
         room.join("Alice".to_string());
         room.join("Bob".to_string());
-        room.become_dj("Alice".to_string()).unwrap();
-        room.become_dj("Bob".to_string()).unwrap();
+        assert!(room.become_dj("Alice".to_string()).is_ok());
+        assert!(room.become_dj("Bob".to_string()).is_ok());
         assert_eq!(room.current_dj(), Some("Bob"));
     }
 }

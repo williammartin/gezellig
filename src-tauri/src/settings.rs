@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use anyhow::{Context, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
@@ -15,19 +16,23 @@ impl Default for Settings {
 }
 
 impl Settings {
-    pub fn load(path: &PathBuf) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|content| serde_json::from_str(&content).ok())
-            .unwrap_or_default()
+    pub fn load(path: &PathBuf) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read settings file: {}", path.display()))?;
+        let settings = serde_json::from_str(&content)
+            .context("Failed to parse settings JSON")?;
+        Ok(settings)
     }
 
-    pub fn save(&self, path: &PathBuf) -> Result<(), String> {
-        let content = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+    pub fn save(&self, path: &PathBuf) -> Result<()> {
+        let content = serde_json::to_string_pretty(self).context("Failed to serialize settings")?;
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create settings dir: {}", parent.display()))?;
         }
-        std::fs::write(path, content).map_err(|e| e.to_string())
+        std::fs::write(path, content)
+            .with_context(|| format!("Failed to write settings file: {}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -44,32 +49,41 @@ mod tests {
 
     #[test]
     fn save_and_load_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(err) => panic!("tempdir failed: {err}"),
+        };
         let path = dir.path().join("settings.json");
 
         let settings = Settings {
             livekit_url: "wss://example.livekit.cloud".to_string(),
         };
 
-        settings.save(&path).unwrap();
+        assert!(settings.save(&path).is_ok());
         let loaded = Settings::load(&path);
-        assert_eq!(loaded, settings);
+        match loaded {
+            Ok(loaded) => assert_eq!(loaded, settings),
+            Err(err) => panic!("load failed: {err}"),
+        }
     }
 
     #[test]
     fn load_returns_default_when_file_missing() {
         let path = PathBuf::from("/tmp/nonexistent_gezellig_test/settings.json");
         let loaded = Settings::load(&path);
-        assert_eq!(loaded, Settings::default());
+        assert!(loaded.is_err());
     }
 
     #[test]
     fn load_returns_default_when_file_is_invalid_json() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(err) => panic!("tempdir failed: {err}"),
+        };
         let path = dir.path().join("settings.json");
-        fs::write(&path, "not json").unwrap();
+        assert!(fs::write(&path, "not json").is_ok());
 
         let loaded = Settings::load(&path);
-        assert_eq!(loaded, Settings::default());
+        assert!(loaded.is_err());
     }
 }

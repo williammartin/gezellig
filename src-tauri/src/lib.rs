@@ -11,6 +11,7 @@ use room::RoomState;
 use settings::Settings;
 use std::sync::Mutex;
 use tauri::{Manager, State};
+use tracing_subscriber::EnvFilter;
 use tokio::sync::Mutex as TokioMutex;
 
 struct SettingsPath(std::path::PathBuf);
@@ -114,12 +115,18 @@ fn save_settings(
     let settings = Settings {
         livekit_url,
     };
-    settings.save(&settings_path.0)
+    settings.save(&settings_path.0).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn load_settings(settings_path: State<'_, SettingsPath>) -> Result<Settings, String> {
-    Ok(Settings::load(&settings_path.0))
+    match Settings::load(&settings_path.0) {
+        Ok(settings) => Ok(settings),
+        Err(err) => {
+            tracing::warn!(error = %err, "Failed to load settings, using defaults");
+            Ok(Settings::default())
+        }
+    }
 }
 
 #[tauri::command]
@@ -301,12 +308,15 @@ async fn livekit_is_connected(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .init();
+    let filter = match EnvFilter::try_from_default_env() {
+        Ok(filter) => filter,
+        Err(_) => EnvFilter::new("info"),
+    };
+    tracing_subscriber::fmt().with_env_filter(filter).json().init();
 
     let _ = DEBUG_LOG.set(DebugLogBuffer::new());
 
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(RoomState::new()))
         .manage(TokioMutex::new(None::<LiveKitRoom>))
@@ -345,5 +355,8 @@ pub fn run() {
             get_env_config,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        ;
+    if let Err(e) = result {
+        tracing::error!(error = %e, "error while running tauri application");
+    }
 }

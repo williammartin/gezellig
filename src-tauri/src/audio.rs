@@ -123,15 +123,15 @@ mod tests {
     #[test]
     fn stub_stays_idle_on_start() {
         let pipeline = StubAudioPipeline::new();
-        pipeline.start().unwrap();
+        assert!(pipeline.start().is_ok());
         assert_eq!(pipeline.status(), DjStatus::Idle);
     }
 
     #[test]
     fn stub_transitions_to_idle_on_stop() {
         let pipeline = StubAudioPipeline::new();
-        pipeline.start().unwrap();
-        pipeline.stop().unwrap();
+        assert!(pipeline.start().is_ok());
+        assert!(pipeline.stop().is_ok());
         assert_eq!(pipeline.status(), DjStatus::Idle);
     }
 
@@ -144,14 +144,14 @@ mod tests {
     #[test]
     fn stub_set_volume() {
         let pipeline = StubAudioPipeline::new();
-        pipeline.set_volume(75).unwrap();
+        assert!(pipeline.set_volume(75).is_ok());
         assert_eq!(pipeline.volume(), 75);
     }
 
     #[test]
     fn stub_volume_caps_at_100() {
         let pipeline = StubAudioPipeline::new();
-        pipeline.set_volume(150).unwrap();
+        assert!(pipeline.set_volume(150).is_ok());
         assert_eq!(pipeline.volume(), 100);
     }
 }
