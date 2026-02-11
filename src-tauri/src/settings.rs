@@ -5,12 +5,16 @@ use anyhow::{Context, Result};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     pub livekit_url: String,
+    pub shared_queue_repo: String,
+    pub shared_queue_file: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             livekit_url: String::new(),
+            shared_queue_repo: "williammartin/gezellig-queue".to_string(),
+            shared_queue_file: "queue.ndjson".to_string(),
         }
     }
 }
@@ -45,6 +49,8 @@ mod tests {
     fn default_settings_have_reasonable_values() {
         let settings = Settings::default();
         assert_eq!(settings.livekit_url, "");
+        assert_eq!(settings.shared_queue_repo, "williammartin/gezellig-queue");
+        assert_eq!(settings.shared_queue_file, "queue.ndjson");
     }
 
     #[test]
@@ -57,6 +63,8 @@ mod tests {
 
         let settings = Settings {
             livekit_url: "wss://example.livekit.cloud".to_string(),
+            shared_queue_repo: "owner/repo".to_string(),
+            shared_queue_file: "queue.ndjson".to_string(),
         };
 
         assert!(settings.save(&path).is_ok());

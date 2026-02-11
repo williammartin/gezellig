@@ -364,17 +364,20 @@ pub struct YouTubePipeline {
 impl YouTubePipeline {
     #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_cache_dir_and_state(None, None)
+        Self::with_cache_dir_and_state(None, None, None)
     }
 
     pub fn with_cache_dir_and_state(
         cache_dir: Option<std::path::PathBuf>,
         shared_state_path: Option<std::path::PathBuf>,
+        shared_queue_defaults: Option<(String, String)>,
     ) -> Self {
         let (pcm_tx, pcm_rx) = mpsc::channel(1024);
+        let default_repo = shared_queue_defaults.as_ref().map(|(repo, _)| repo.clone());
+        let default_path = shared_queue_defaults.as_ref().map(|(_, path)| path.clone());
         let shared_queue = match (
-            std::env::var("GEZELLIG_SHARED_QUEUE_REPO").ok(),
-            std::env::var("GEZELLIG_SHARED_QUEUE_FILE").ok(),
+            std::env::var("GEZELLIG_SHARED_QUEUE_REPO").ok().or(default_repo),
+            std::env::var("GEZELLIG_SHARED_QUEUE_FILE").ok().or(default_path),
             shared_state_path,
         ) {
             (Some(repo), Some(path), Some(state_path)) => Some(SharedQueueConfig {

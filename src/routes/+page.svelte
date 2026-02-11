@@ -7,6 +7,8 @@
   let showSettings = $state(false);
   let livekitUrl = $state("wss://gezellig-tmbd1vyo.livekit.cloud");
   let livekitToken = $state("");
+  let sharedQueueRepo = $state("williammartin/gezellig-queue");
+  let sharedQueueFile = $state("queue.ndjson");
   let setupComplete = $state(false);
   let livekitConnected = $state(false);
   let notifications: string[] = $state([]);
@@ -94,6 +96,12 @@
       if (envConfig.livekitUrl && envConfig.livekitToken) {
         livekitUrl = envConfig.livekitUrl;
         livekitToken = envConfig.livekitToken;
+        if (envConfig.sharedQueueRepo) {
+          sharedQueueRepo = envConfig.sharedQueueRepo;
+        }
+        if (envConfig.sharedQueueFile) {
+          sharedQueueFile = envConfig.sharedQueueFile;
+        }
         setupComplete = true;
         djBotMode = envConfig.djBot === "1";
         debugLog(`Using env var config (LIVEKIT_URL + LIVEKIT_TOKEN)`);
@@ -110,6 +118,8 @@
         const data = JSON.parse(saved);
         livekitUrl = data.livekitUrl || "";
         livekitToken = data.livekitToken || "";
+        sharedQueueRepo = data.sharedQueueRepo || sharedQueueRepo;
+        sharedQueueFile = data.sharedQueueFile || sharedQueueFile;
         if (livekitUrl && livekitToken) {
           setupComplete = true;
           connectToLiveKit();
@@ -182,6 +192,8 @@
     localStorage.setItem("gezellig-setup", JSON.stringify({
       livekitUrl,
       livekitToken,
+      sharedQueueRepo,
+      sharedQueueFile,
     }));
     setupComplete = true;
     await connectToLiveKit();
@@ -202,6 +214,8 @@
     showSettings = false;
     livekitUrl = "wss://gezellig-tmbd1vyo.livekit.cloud";
     livekitToken = "";
+    sharedQueueRepo = "williammartin/gezellig-queue";
+    sharedQueueFile = "queue.ndjson";
     inRoom = false;
     roomParticipants = [];
     musicVolume = 50;
@@ -378,6 +392,14 @@
               Token
               <textarea data-testid="settings-token" bind:value={livekitToken} rows="2"></textarea>
             </label>
+            <label>
+              Shared Queue Repo
+              <input data-testid="settings-queue-repo" type="text" bind:value={sharedQueueRepo} />
+            </label>
+            <label>
+              Shared Queue File
+              <input data-testid="settings-queue-file" type="text" bind:value={sharedQueueFile} />
+            </label>
             <div class="settings-section">
               <h3>Voice Chat</h3>
               <label class="toggle-row">
@@ -396,9 +418,18 @@
             </div>
             <div class="settings-actions">
               <button data-testid="settings-save" onclick={async () => {
-                localStorage.setItem("gezellig-setup", JSON.stringify({ livekitUrl, livekitToken }));
+                localStorage.setItem("gezellig-setup", JSON.stringify({
+                  livekitUrl,
+                  livekitToken,
+                  sharedQueueRepo,
+                  sharedQueueFile,
+                }));
                 try {
-                  await invoke("save_settings", { livekitUrl });
+                  await invoke("save_settings", {
+                    livekitUrl,
+                    sharedQueueRepo,
+                    sharedQueueFile,
+                  });
               } catch { /* outside Tauri */ }
               addNotification('Settings saved');
               showSettings = false;

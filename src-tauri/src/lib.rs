@@ -123,9 +123,13 @@ fn stop_dj(state: State<'_, Mutex<RoomState>>) -> Result<(), String> {
 fn save_settings(
     settings_path: State<'_, SettingsPath>,
     livekit_url: String,
+    shared_queue_repo: String,
+    shared_queue_file: String,
 ) -> Result<(), String> {
     let settings = Settings {
         livekit_url,
+        shared_queue_repo,
+        shared_queue_file,
     };
     settings.save(&settings_path.0).map_err(|e| e.to_string())
 }
@@ -460,13 +464,16 @@ pub fn run() {
         .manage(TokioMutex::new(None::<MicTestHandle>))
         .setup(|app| {
             let app_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-            app.manage(SettingsPath(app_dir.join("settings.json")));
+            let settings_path = app_dir.join("settings.json");
+            let settings = Settings::load(&settings_path).unwrap_or_default();
+            app.manage(SettingsPath(settings_path));
 
             let cache_dir = app.path().app_cache_dir().ok().map(|d| d.join("audio"));
             let shared_state = app_dir.join("shared_queue_state.json");
             let pipeline = youtube_pipeline::YouTubePipeline::with_cache_dir_and_state(
                 cache_dir,
                 Some(shared_state),
+                Some((settings.shared_queue_repo, settings.shared_queue_file)),
             );
             app.manage(Mutex::new(Box::new(pipeline) as DynAudioPipeline));
 

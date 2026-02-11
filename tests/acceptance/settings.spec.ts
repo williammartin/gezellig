@@ -64,4 +64,15 @@ test.describe('Settings', () => {
     const tokenField = page.locator('[data-testid="settings-token"]');
     await expect(tokenField).toBeVisible();
   });
+
+  test('shows shared queue settings defaults', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('[data-testid="settings-button"]').click();
+    const repoField = page.locator('[data-testid="settings-queue-repo"]');
+    const fileField = page.locator('[data-testid="settings-queue-file"]');
+    await expect(repoField).toBeVisible();
+    await expect(fileField).toBeVisible();
+    await expect(repoField).toHaveValue('williammartin/gezellig-queue');
+    await expect(fileField).toHaveValue('queue.ndjson');
+  });
 });
