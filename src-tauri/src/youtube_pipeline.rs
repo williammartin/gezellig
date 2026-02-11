@@ -504,6 +504,16 @@ impl AudioPipeline for YouTubePipeline {
             .map(|(items, _)| items.into_iter().map(|t| t.url).collect())
     }
 
+    fn clear_shared_queue(&self) -> Result<(), String> {
+        if let Some(cfg) = self.shared_queue.as_ref() {
+            append_cleared_event(cfg)?;
+        } else {
+            let mut queue = self.queue.lock().map_err(|e| e.to_string())?;
+            queue.clear();
+        }
+        Ok(())
+    }
+
     fn take_pcm_receiver(&self) -> Option<mpsc::Receiver<Vec<u8>>> {
         self.pcm_receiver.lock().ok()?.take()
     }
@@ -731,6 +741,7 @@ fn fetch_shared_queue(cfg: &SharedQueueConfig) -> Result<(Vec<QueuedTrack>, u64)
     let mut queued: Vec<(u64, String)> = Vec::new();
     let mut played: std::collections::HashSet<u64> = std::collections::HashSet::new();
     let mut failed: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut last_cleared_id = 0;
 
     for line in content.lines() {
         let line = line.trim();
@@ -756,6 +767,12 @@ fn fetch_shared_queue(cfg: &SharedQueueConfig) -> Result<(Vec<QueuedTrack>, u64)
                             failed.insert(ref_id);
                         }
                     }
+                    "cleared" => {
+                        last_cleared_id = last_cleared_id.max(event.id);
+                        queued.clear();
+                        played.clear();
+                        failed.clear();
+                    }
                     _ => {}
                 }
             }
@@ -768,7 +785,7 @@ fn fetch_shared_queue(cfg: &SharedQueueConfig) -> Result<(Vec<QueuedTrack>, u64)
     queued.sort_by_key(|(id, _)| *id);
     let items = queued
         .into_iter()
-        .filter(|(id, _)| !played.contains(id) && !failed.contains(id))
+        .filter(|(id, _)| *id > last_cleared_id && !played.contains(id) && !failed.contains(id))
         .map(|(id, url)| QueuedTrack {
             url,
             title: "Shared Queue".to_string(),
@@ -865,6 +882,16 @@ fn append_played_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, S
 
 fn append_failed_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, String> {
     append_event_with_ref(cfg, "failed", queued_id)
+}
+
+fn append_cleared_event(cfg: &SharedQueueConfig) -> Result<u64, String> {
+    let event_builder = |next_id| {
+        serde_json::json!({
+            "id": next_id,
+            "type": "cleared",
+        })
+    };
+    append_event_with_retry(cfg, event_builder)
 }
 
 fn append_event_with_ref(cfg: &SharedQueueConfig, event_type: &str, queued_id: u64) -> Result<u64, String> {

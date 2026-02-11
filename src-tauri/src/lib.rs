@@ -340,6 +340,12 @@ fn get_shared_queue(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<Vec<
 }
 
 #[tauri::command]
+fn clear_shared_queue(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<(), String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    p.clear_shared_queue()
+}
+
+#[tauri::command]
 fn get_backend_logs() -> Vec<String> {
     if let Some(buf) = DEBUG_LOG.get() {
         buf.drain()
@@ -473,6 +479,7 @@ pub fn run() {
             skip_track,
             get_queue,
             get_shared_queue,
+            clear_shared_queue,
             livekit_connect,
             livekit_disconnect,
             livekit_participants,

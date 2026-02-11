@@ -240,6 +240,16 @@
     }
   }
 
+  async function clearQueue() {
+    try {
+      await invoke("clear_shared_queue");
+      await refreshQueue();
+    } catch {
+      // Outside Tauri
+      djQueue = [];
+    }
+  }
+
   async function startBotPlayback() {
     try {
       await invoke("start_dj_audio");
@@ -410,6 +420,9 @@
               <div class="queue-input">
                 <input data-testid="queue-url-input" type="text" placeholder="Paste YouTube URL..." bind:value={djQueueUrl} onkeydown={(e) => e.key === 'Enter' && addToQueue()} />
                 <button data-testid="add-to-queue-button" class="btn" onclick={addToQueue}>Add to Queue</button>
+              </div>
+              <div class="queue-actions">
+                <button data-testid="clear-queue-button" class="btn btn-outline" onclick={clearQueue}>Clear Queue</button>
               </div>
               {#if djQueue.length > 0}
                 <div data-testid="dj-queue" class="queue-list">
@@ -701,6 +714,12 @@ h2 {
   display: flex;
   gap: 0.5rem;
   margin: 0.5rem 0;
+}
+
+.queue-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.5rem;
 }
 
 .queue-input input[type="text"] {

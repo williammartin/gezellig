@@ -20,4 +20,17 @@ test.describe('Queue', () => {
     await page.locator('[data-testid="add-to-queue-button"]').click();
     await expect(page.locator('[data-testid="dj-queue"]')).toBeVisible();
   });
+
+  test('shows clear queue button', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('[data-testid="clear-queue-button"]')).toBeVisible();
+  });
+
+  test('can clear queue locally', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('[data-testid="queue-url-input"]').fill('https://youtube.com/watch?v=test');
+    await page.locator('[data-testid="add-to-queue-button"]').click();
+    await page.locator('[data-testid="clear-queue-button"]').click();
+    await expect(page.locator('[data-testid="dj-queue"]')).not.toBeVisible();
+  });
 });

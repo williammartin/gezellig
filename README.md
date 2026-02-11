@@ -16,6 +16,7 @@ The queue file is NDJSON with append-only events:
 { "id": 1, "type": "queued", "url": "https://..." }
 { "id": 2, "type": "played", "ref": 1 }
 { "id": 3, "type": "failed", "ref": 1 }
+{ "id": 4, "type": "cleared" }
 ```
 
 ## Recommended IDE Setup

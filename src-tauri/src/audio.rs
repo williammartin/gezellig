@@ -50,6 +50,11 @@ pub trait AudioPipeline: Send + Sync {
         None
     }
 
+    /// Clear the queue (shared if configured).
+    fn clear_shared_queue(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Take the PCM receiver for LiveKit publishing (can only be called once).
     fn take_pcm_receiver(&self) -> Option<tokio::sync::mpsc::Receiver<Vec<u8>>>;
 
