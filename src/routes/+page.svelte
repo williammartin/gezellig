@@ -2,7 +2,6 @@
   import { invoke } from "@tauri-apps/api/core";
 
   let inRoom = $state(true);
-  let isDJ = $state(false);
   let roomParticipants: string[] = $state([]);
   let musicVolume = $state(50);
   let showSettings = $state(false);
@@ -11,14 +10,12 @@
   let setupComplete = $state(false);
   let livekitConnected = $state(false);
   let notifications: string[] = $state([]);
-  let djStatus: { type: string; track?: string; artist?: string } = $state({ type: "Idle" });
-  let djStatusPollInterval: ReturnType<typeof setInterval> | null = $state(null);
   let djQueueUrl = $state("");
   let djQueue: string[] = $state([]);
   let showDebug = $state(false);
   let debugLogs: string[] = $state([]);
-  let lastStatusLog = "";
   let participantPollInterval: ReturnType<typeof setInterval> | null = $state(null);
+  let queuePollInterval: ReturnType<typeof setInterval> | null = $state(null);
   let voiceChatEnabled = $state(false);
   let micTestActive = $state(false);
   let micLevel = $state(0);
@@ -96,10 +93,6 @@
         djBotMode = envConfig.djBot === "1";
         debugLog(`Using env var config (LIVEKIT_URL + LIVEKIT_TOKEN)`);
         await connectToLiveKit();
-        if (djBotMode) {
-          debugLog("DJ bot mode enabled");
-          await becomeDJ();
-        }
         return;
       }
     } catch {
@@ -135,6 +128,11 @@
       addNotification('Connected to LiveKit');
       debugLog('LiveKit connected successfully');
       startParticipantPolling();
+      startQueuePolling();
+      if (djBotMode) {
+        debugLog("DJ bot mode enabled");
+        await startBotPlayback();
+      }
     } catch (e) {
       debugLog(`LiveKit connection failed: ${e}`);
     }
@@ -150,6 +148,19 @@
     if (participantPollInterval) {
       clearInterval(participantPollInterval);
       participantPollInterval = null;
+    }
+  }
+
+  function startQueuePolling() {
+    if (queuePollInterval) return;
+    refreshQueue();
+    queuePollInterval = setInterval(refreshQueue, 2000);
+  }
+
+  function stopQueuePolling() {
+    if (queuePollInterval) {
+      clearInterval(queuePollInterval);
+      queuePollInterval = null;
     }
   }
 
@@ -187,13 +198,13 @@
     livekitUrl = "wss://gezellig-tmbd1vyo.livekit.cloud";
     livekitToken = "";
     inRoom = false;
-    isDJ = false;
     roomParticipants = [];
     musicVolume = 50;
     voiceChatEnabled = false;
     micTestActive = false;
     micLevel = 0;
     stopMicLevelPolling();
+    stopQueuePolling();
   }
 
   let canConnect = $derived(livekitUrl.length > 0 && livekitToken.length > 0);
@@ -205,55 +216,6 @@
     }, 5000);
   }
 
-  async function joinRoom() {
-    try {
-      await invoke("join_room");
-    } catch { /* ok */ }
-    inRoom = true;
-    addNotification('You joined the room');
-  }
-
-  async function leaveRoom() {
-    try {
-      await invoke("leave_room");
-    } catch { /* ok */ }
-    inRoom = false;
-    isDJ = false;
-    addNotification('You left the room');
-  }
-
-
-  async function becomeDJ() {
-    isDJ = true;
-    addNotification('You are now the DJ');
-    debugLog('becomeDJ: calling become_dj + start_dj_audio');
-    try {
-      await invoke("join_room");
-      await invoke("become_dj");
-      debugLog('becomeDJ: become_dj OK');
-      await invoke("start_dj_audio");
-      debugLog('becomeDJ: start_dj_audio OK');
-    } catch (e) {
-      debugLog(`becomeDJ error: ${e}`);
-    }
-    startDjStatusPolling();
-  }
-
-  async function stopDJ() {
-    debugLog('stopDJ called');
-    stopDjStatusPolling();
-    try {
-      await invoke("stop_dj_audio");
-      await invoke("stop_dj");
-    } catch (e) {
-      debugLog(`stopDJ error: ${e}`);
-    }
-    isDJ = false;
-    djStatus = { type: "Idle" };
-    djQueue = [];
-    djQueueUrl = "";
-  }
-
   async function addToQueue() {
     if (!djQueueUrl.trim()) return;
     const url = djQueueUrl.trim();
@@ -262,20 +224,28 @@
     try {
       await invoke("queue_track", { url });
       debugLog('queue_track OK');
-      djQueue = await invoke<string[]>("get_queue");
-      debugLog(`get_queue: ${djQueue.length} items`);
+      await refreshQueue();
     } catch (e) {
       debugLog(`addToQueue error: ${e}`);
       djQueue = [...djQueue, url];
     }
   }
 
-  async function skipTrack() {
-    debugLog('skipTrack called');
+  async function refreshQueue() {
     try {
-      await invoke("skip_track");
+      const queue = await invoke<string[]>("get_shared_queue");
+      djQueue = queue;
+    } catch {
+      // Outside Tauri
+    }
+  }
+
+  async function startBotPlayback() {
+    try {
+      await invoke("start_dj_audio");
+      debugLog("DJ bot started playback loop");
     } catch (e) {
-      debugLog(`skipTrack error: ${e}`);
+      debugLog(`DJ bot start error: ${e}`);
     }
   }
 
@@ -318,52 +288,6 @@
     }
   }
 
-  function startDjStatusPolling() {
-    stopDjStatusPolling();
-    djStatusPollInterval = setInterval(async () => {
-      try {
-        const status = await invoke<any>("get_dj_status");
-        const statusStr = JSON.stringify(status);
-        if (statusStr !== lastStatusLog) {
-          debugLog(`dj_status: ${statusStr}`);
-          lastStatusLog = statusStr;
-        }
-        if (typeof status === "string") {
-          djStatus = { type: status };
-        } else if (status && typeof status === "object") {
-          if (status.Playing) {
-            djStatus = { type: "Playing", track: status.Playing.track, artist: status.Playing.artist };
-          } else if (status.Loading !== undefined) {
-            djStatus = { type: "Loading" };
-          } else {
-            djStatus = { type: "Idle" };
-          }
-        }
-      } catch {
-        // Outside Tauri
-      }
-      try {
-        djQueue = await invoke<string[]>("get_queue");
-      } catch {
-        // Outside Tauri
-      }
-      try {
-        const backendLogs = await invoke<string[]>("get_backend_logs");
-        for (const log of backendLogs) {
-          debugLog(`[rust] ${log}`);
-        }
-      } catch {
-        // Outside Tauri
-      }
-    }, 1000);
-  }
-
-  function stopDjStatusPolling() {
-    if (djStatusPollInterval) {
-      clearInterval(djStatusPollInterval);
-      djStatusPollInterval = null;
-    }
-  }
 </script>
 
 {#if !setupComplete}
@@ -481,38 +405,23 @@
                 <input data-testid="music-volume" type="range" min="0" max="100" bind:value={musicVolume} oninput={updateMusicVolume} />
               </label>
             </div>
-            {#if isDJ}
-              <div data-testid="dj-status" class="card dj-section">
-                <p class="dj-label">🎵 You are the DJ</p>
-                <div data-testid="now-playing" class="now-playing">
-                  {#if djStatus.type === "Playing"}
-                    🎵 {djStatus.track} — {djStatus.artist}
-                  {:else if djStatus.type === "Loading"}
-                    ⏳ Loading...
-                  {:else}
-                    Add a YouTube URL to get started
-                  {/if}
-                </div>
-                <div class="queue-input">
-                  <input data-testid="queue-url-input" type="text" placeholder="Paste YouTube URL..." bind:value={djQueueUrl} onkeydown={(e) => e.key === 'Enter' && addToQueue()} />
-                  <button data-testid="add-to-queue-button" class="btn" onclick={addToQueue}>Add to Queue</button>
-                </div>
-                {#if djQueue.length > 0}
-                  <div data-testid="dj-queue" class="queue-list">
-                    <p class="queue-label">Queue ({djQueue.length})</p>
-                    {#each djQueue as url, i}
-                      <div class="queue-item">{i + 1}. {url}</div>
-                    {/each}
-                  </div>
-                {/if}
-                <div class="dj-controls">
-                  <button data-testid="skip-track-button" class="btn btn-outline" onclick={skipTrack}>⏭ Skip</button>
-                  <button data-testid="stop-dj-button" class="btn btn-outline" onclick={stopDJ}>Stop DJ</button>
-                </div>
+            <div data-testid="queue-panel" class="card dj-section">
+              <p class="dj-label">🎵 Shared Queue</p>
+              <div class="queue-input">
+                <input data-testid="queue-url-input" type="text" placeholder="Paste YouTube URL..." bind:value={djQueueUrl} onkeydown={(e) => e.key === 'Enter' && addToQueue()} />
+                <button data-testid="add-to-queue-button" class="btn" onclick={addToQueue}>Add to Queue</button>
               </div>
-            {:else}
-              <button data-testid="become-dj-button" class="btn" onclick={becomeDJ}>🎧 Become DJ</button>
-            {/if}
+              {#if djQueue.length > 0}
+                <div data-testid="dj-queue" class="queue-list">
+                  <p class="queue-label">Queue ({djQueue.length})</p>
+                  {#each djQueue as url, i}
+                    <div class="queue-item">{i + 1}. {url}</div>
+                  {/each}
+                </div>
+              {:else}
+                <p class="empty-state">No tracks queued yet</p>
+              {/if}
+            </div>
         </div>
       {/if}
     </main>
@@ -774,15 +683,6 @@ h2 {
   margin: 0 0 0.5rem;
 }
 
-.now-playing {
-  padding: 0.6rem 0.8rem;
-  margin: 0.5rem 0;
-  background: #f7f5f3;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  color: #888;
-}
-
 .volume-control {
   display: block;
   margin: 0.75rem 0;
@@ -833,14 +733,6 @@ h2 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.dj-controls {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  margin-top: 0.5rem;
-  flex-wrap: wrap;
 }
 
 /* ---- Settings panel ---- */
@@ -1099,7 +991,6 @@ button.danger:hover {
     background: #2a2927;
     border-color: #3a3836;
   }
-  .now-playing { background: #353331; }
   h2 { color: #777; }
   .user-list li { color: #c8c4c0; }
   .user-list li + li { border-color: #3a3836; }

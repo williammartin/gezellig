@@ -45,6 +45,11 @@ pub trait AudioPipeline: Send + Sync {
     /// Get the current queue (list of URLs/titles).
     fn get_queue(&self) -> Vec<String>;
 
+    /// Get shared queue if configured.
+    fn shared_queue(&self) -> Option<Vec<String>> {
+        None
+    }
+
     /// Take the PCM receiver for LiveKit publishing (can only be called once).
     fn take_pcm_receiver(&self) -> Option<tokio::sync::mpsc::Receiver<Vec<u8>>>;
 

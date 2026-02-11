@@ -7,10 +7,11 @@ test.describe('Notifications', () => {
     await expect(notificationArea).toBeVisible();
   });
 
-  test('shows notification when becoming DJ', async ({ page }) => {
+  test('shows notification when settings are saved', async ({ page }) => {
     await page.goto('/');
-    await page.locator('[data-testid="become-dj-button"]').click();
+    await page.locator('[data-testid="settings-button"]').click();
+    await page.locator('[data-testid="settings-save"]').click();
     const notification = page.locator('[data-testid="notification-area"]');
-    await expect(notification).toContainText('You are now the DJ');
+    await expect(notification).toContainText('Settings saved');
   });
 });

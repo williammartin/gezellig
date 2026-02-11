@@ -13,8 +13,8 @@ test.describe('Room', () => {
     await expect(page.locator('[data-testid="music-volume"]')).toBeVisible();
   });
 
-  test('shows become DJ button on launch', async ({ page }) => {
+  test('shows shared queue panel on launch', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('[data-testid="become-dj-button"]')).toBeVisible();
+    await expect(page.locator('[data-testid="queue-panel"]')).toBeVisible();
   });
 });

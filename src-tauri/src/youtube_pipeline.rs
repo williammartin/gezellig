@@ -5,12 +5,14 @@
 //! LiveKit publishing. Queue supports multiple tracks with auto-advance.
 
 use std::io::Cursor;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{
     atomic::{AtomicU8, Ordering},
     Arc, Mutex,
 };
 
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use rusty_ytdl::{Video, VideoOptions, VideoQuality, VideoSearchOptions};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -294,6 +296,29 @@ pub struct QueuedTrack {
     pub url: String,
     #[allow(dead_code)]
     pub title: String,
+    pub queued_id: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct SharedQueueConfig {
+    gist_id: String,
+    filename: String,
+    state_path: std::path::PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct SharedQueueState {
+    last_seen_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueEvent {
+    id: u64,
+    #[serde(rename = "type")]
+    event_type: String,
+    url: Option<String>,
+    #[serde(rename = "ref")]
+    ref_id: Option<u64>,
 }
 
 /// Audio pipeline backed by YouTube audio via rusty_ytdl.
@@ -309,18 +334,32 @@ pub struct YouTubePipeline {
     local_playback_disabled: Arc<std::sync::atomic::AtomicBool>,
     loop_running: Arc<std::sync::atomic::AtomicBool>,
     cache_dir: Option<std::path::PathBuf>,
-    shared_queue_url: Option<String>,
+    shared_queue: Option<SharedQueueConfig>,
 }
 
 impl YouTubePipeline {
     #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_cache_dir(None)
+        Self::with_cache_dir_and_state(None, None)
     }
 
-    pub fn with_cache_dir(cache_dir: Option<std::path::PathBuf>) -> Self {
+    pub fn with_cache_dir_and_state(
+        cache_dir: Option<std::path::PathBuf>,
+        shared_state_path: Option<std::path::PathBuf>,
+    ) -> Self {
         let (pcm_tx, pcm_rx) = mpsc::channel(1024);
-        let shared_queue_url = std::env::var("GEZELLIG_SHARED_QUEUE_URL").ok();
+        let shared_queue = match (
+            std::env::var("GEZELLIG_SHARED_QUEUE_GIST").ok(),
+            std::env::var("GEZELLIG_SHARED_QUEUE_FILE").ok(),
+            shared_state_path,
+        ) {
+            (Some(gist_id), Some(filename), Some(state_path)) => Some(SharedQueueConfig {
+                gist_id,
+                filename,
+                state_path,
+            }),
+            _ => None,
+        };
         Self {
             status: Arc::new(Mutex::new(DjStatus::Idle)),
             volume: Arc::new(AtomicU8::new(50)),
@@ -332,7 +371,7 @@ impl YouTubePipeline {
             local_playback_disabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             loop_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cache_dir,
-            shared_queue_url,
+            shared_queue,
         }
     }
 }
@@ -363,7 +402,7 @@ impl AudioPipeline for YouTubePipeline {
             let local_disabled = self.local_playback_disabled.clone();
             let cache_dir = self.cache_dir.clone();
             let volume = self.volume.clone();
-            let shared_queue_url = self.shared_queue_url.clone();
+            let shared_queue = self.shared_queue.clone();
 
             tokio::spawn(async move {
                 run_playback_loop(
@@ -375,7 +414,7 @@ impl AudioPipeline for YouTubePipeline {
                     local_disabled,
                     cache_dir,
                     volume,
-                    shared_queue_url,
+                    shared_queue,
                 )
                 .await;
                 crate::dlog!("[DJ] Playback loop ended");
@@ -423,9 +462,14 @@ impl AudioPipeline for YouTubePipeline {
     }
 
     fn queue_track(&self, url: String) -> Result<(), String> {
+        if let Some(cfg) = self.shared_queue.as_ref() {
+            let _ = append_queue_event(cfg, &url)?;
+            return Ok(());
+        }
         let track = QueuedTrack {
             url,
             title: "Loading...".to_string(),
+            queued_id: None,
         };
         let mut queue = self.queue.lock().map_err(|e| e.to_string())?;
         queue.push(track);
@@ -444,6 +488,13 @@ impl AudioPipeline for YouTubePipeline {
     fn get_queue(&self) -> Vec<String> {
         let queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.iter().map(|t| t.url.clone()).collect()
+    }
+
+    fn shared_queue(&self) -> Option<Vec<String>> {
+        let cfg = self.shared_queue.as_ref()?;
+        fetch_shared_queue(cfg)
+            .ok()
+            .map(|(items, _)| items.into_iter().map(|t| t.url).collect())
     }
 
     fn take_pcm_receiver(&self) -> Option<mpsc::Receiver<Vec<u8>>> {
@@ -465,7 +516,7 @@ async fn run_playback_loop(
     local_playback_disabled: Arc<std::sync::atomic::AtomicBool>,
     cache_dir: Option<std::path::PathBuf>,
     volume: Arc<AtomicU8>,
-    shared_queue_url: Option<String>,
+    shared_queue: Option<SharedQueueConfig>,
 ) {
     let source = YtDlpSource::new(cache_dir);
     crate::dlog!("[DJ] Playback loop started");
@@ -476,25 +527,19 @@ async fn run_playback_loop(
             break;
         }
 
-        if let Some(url) = shared_queue_url.as_ref() {
+        if let Some(cfg) = shared_queue.as_ref() {
             let should_fetch = queue
                 .lock()
                 .map(|q| q.is_empty())
                 .unwrap_or(true);
             if should_fetch {
-                if let Ok(items) = fetch_shared_queue(url).await {
+                if let Ok((items, last_seen)) = fetch_shared_queue(cfg) {
                     if !items.is_empty() {
                         if let Ok(mut q) = queue.lock() {
-                            for item in items {
-                                if !q.iter().any(|t| t.url == item) {
-                                    q.push(QueuedTrack {
-                                        url: item,
-                                        title: "Shared Queue".to_string(),
-                                    });
-                                }
-                            }
+                            q.extend(items);
                         }
                     }
+                    let _ = write_shared_state(cfg, SharedQueueState { last_seen_id: last_seen });
                 }
             }
         }
@@ -537,6 +582,11 @@ async fn run_playback_loop(
             }
             Err(e) => {
                 crate::dlog!("[DJ] Failed to fetch audio: {e}");
+                if let (Some(cfg), Some(queued_id)) = (shared_queue.as_ref(), track.queued_id) {
+                    if let Err(err) = append_failed_event(cfg, queued_id) {
+                        crate::dlog!("[DJ] Failed to append failed event: {err}");
+                    }
+                }
                 continue;
             }
         };
@@ -650,6 +700,12 @@ async fn run_playback_loop(
             crate::dlog!("[DJ] Track finished: {}", track_info.title);
         }
 
+        if let (Some(cfg), Some(queued_id)) = (shared_queue.as_ref(), track.queued_id) {
+            if let Err(err) = append_played_event(cfg, queued_id) {
+                crate::dlog!("[DJ] Failed to append played event: {err}");
+            }
+        }
+
         if let Some(handle) = playback_handle {
             let _ = handle.join();
         }
@@ -662,36 +718,164 @@ async fn run_playback_loop(
     crate::dlog!("[DJ] Playback loop ended");
 }
 
-async fn fetch_shared_queue(url: &str) -> Result<Vec<String>, String> {
-    let resp = reqwest::get(url)
-        .await
-        .map_err(|e| format!("Shared queue fetch failed: {e}"))?;
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("Shared queue read failed: {e}"))?;
+fn fetch_shared_queue(cfg: &SharedQueueConfig) -> Result<(Vec<QueuedTrack>, u64), String> {
+    let content = read_gist_file(cfg)?;
+    let mut max_id = 0;
+    let mut queued: Vec<(u64, String)> = Vec::new();
+    let mut played: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut failed: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-    if let Ok(list) = serde_json::from_str::<Vec<String>>(&body) {
-        return Ok(list.into_iter().filter(|s| !s.trim().is_empty()).collect());
-    }
-
-    if let Ok(json) = serde_json::from_str::<Value>(&body) {
-        if let Some(array) = json.as_array() {
-            let items = array
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .filter(|s| !s.trim().is_empty())
-                .collect();
-            return Ok(items);
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<QueueEvent>(line) {
+            Ok(event) => {
+                max_id = max_id.max(event.id);
+                match event.event_type.as_str() {
+                    "queued" => {
+                        if let Some(url) = event.url {
+                            queued.push((event.id, url));
+                        }
+                    }
+                    "played" => {
+                        if let Some(ref_id) = event.ref_id {
+                            played.insert(ref_id);
+                        }
+                    }
+                    "failed" => {
+                        if let Some(ref_id) = event.ref_id {
+                            failed.insert(ref_id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Err(err) => {
+                crate::dlog!("[DJ] Shared queue parse error: {err}");
+            }
         }
     }
 
-    let items = body
-        .lines()
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty())
+    queued.sort_by_key(|(id, _)| *id);
+    let items = queued
+        .into_iter()
+        .filter(|(id, _)| !played.contains(id) && !failed.contains(id))
+        .map(|(id, url)| QueuedTrack {
+            url,
+            title: "Shared Queue".to_string(),
+            queued_id: Some(id),
+        })
         .collect();
-    Ok(items)
+    Ok((items, max_id))
+}
+
+fn read_gist_file(cfg: &SharedQueueConfig) -> Result<String, String> {
+    let output = Command::new("gh")
+        .args(["gist", "view", &cfg.gist_id, "-f", &cfg.filename])
+        .output()
+        .map_err(|e| format!("Failed to run gh gist view: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("Invalid gist content: {e}"))
+}
+
+fn write_gist_file(cfg: &SharedQueueConfig, content: &str) -> Result<(), String> {
+    let mut tmp_path = std::env::temp_dir();
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    tmp_path.push(format!("gezellig-queue-{suffix}.ndjson"));
+    std::fs::write(&tmp_path, content).map_err(|e| format!("Failed to write temp file: {e}"))?;
+
+    let arg = format!("files[{}][content]=@{}", cfg.filename, tmp_path.display());
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "PATCH",
+            &format!("/gists/{}", cfg.gist_id),
+            "-f",
+            &arg,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run gh api: {e}"))?;
+
+    let _ = std::fs::remove_file(&tmp_path);
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    Ok(())
+}
+
+fn write_shared_state(cfg: &SharedQueueConfig, state: SharedQueueState) -> Result<(), String> {
+    if let Some(parent) = cfg.state_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create state dir: {e}"))?;
+    }
+    let content = serde_json::to_string_pretty(&state)
+        .map_err(|e| format!("Failed to serialize state: {e}"))?;
+    std::fs::write(&cfg.state_path, content).map_err(|e| format!("Failed to write state: {e}"))
+}
+
+fn append_queue_event(cfg: &SharedQueueConfig, url: &str) -> Result<u64, String> {
+    let content = read_gist_file(cfg)?;
+    let mut max_id = 0;
+    for line in content.lines() {
+        if let Ok(event) = serde_json::from_str::<QueueEvent>(line) {
+            max_id = max_id.max(event.id);
+        }
+    }
+    let next_id = max_id + 1;
+    let event = serde_json::json!({
+        "id": next_id,
+        "type": "queued",
+        "url": url,
+    });
+    let mut new_content = content;
+    if !new_content.ends_with('\n') && !new_content.is_empty() {
+        new_content.push('\n');
+    }
+    new_content.push_str(&event.to_string());
+    new_content.push('\n');
+    write_gist_file(cfg, &new_content)?;
+    write_shared_state(cfg, SharedQueueState { last_seen_id: next_id })?;
+    Ok(next_id)
+}
+
+fn append_played_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, String> {
+    append_event_with_ref(cfg, "played", queued_id)
+}
+
+fn append_failed_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, String> {
+    append_event_with_ref(cfg, "failed", queued_id)
+}
+
+fn append_event_with_ref(cfg: &SharedQueueConfig, event_type: &str, queued_id: u64) -> Result<u64, String> {
+    let content = read_gist_file(cfg)?;
+    let mut max_id = 0;
+    for line in content.lines() {
+        if let Ok(event) = serde_json::from_str::<QueueEvent>(line) {
+            max_id = max_id.max(event.id);
+        }
+    }
+    let next_id = max_id + 1;
+    let event = serde_json::json!({
+        "id": next_id,
+        "type": event_type,
+        "ref": queued_id,
+    });
+    let mut new_content = content;
+    if !new_content.ends_with('\n') && !new_content.is_empty() {
+        new_content.push('\n');
+    }
+    new_content.push_str(&event.to_string());
+    new_content.push('\n');
+    write_gist_file(cfg, &new_content)?;
+    write_shared_state(cfg, SharedQueueState { last_seen_id: next_id })?;
+    Ok(next_id)
 }
 
 #[cfg(test)]

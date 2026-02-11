@@ -330,6 +330,16 @@ fn get_queue(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<Vec<String>
 }
 
 #[tauri::command]
+fn get_shared_queue(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<Vec<String>, String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    if let Some(queue) = p.shared_queue() {
+        Ok(queue)
+    } else {
+        Ok(p.get_queue())
+    }
+}
+
+#[tauri::command]
 fn get_backend_logs() -> Vec<String> {
     if let Some(buf) = DEBUG_LOG.get() {
         buf.drain()
@@ -350,8 +360,11 @@ fn get_env_config() -> std::collections::HashMap<String, String> {
     if let Ok(bot) = std::env::var("GEZELLIG_DJ_BOT") {
         config.insert("djBot".to_string(), bot);
     }
-    if let Ok(url) = std::env::var("GEZELLIG_SHARED_QUEUE_URL") {
-        config.insert("sharedQueueUrl".to_string(), url);
+    if let Ok(gist_id) = std::env::var("GEZELLIG_SHARED_QUEUE_GIST") {
+        config.insert("sharedQueueGist".to_string(), gist_id);
+    }
+    if let Ok(filename) = std::env::var("GEZELLIG_SHARED_QUEUE_FILE") {
+        config.insert("sharedQueueFile".to_string(), filename);
     }
     config
 }
@@ -429,7 +442,11 @@ pub fn run() {
             app.manage(SettingsPath(app_dir.join("settings.json")));
 
             let cache_dir = app.path().app_cache_dir().ok().map(|d| d.join("audio"));
-            let pipeline = youtube_pipeline::YouTubePipeline::with_cache_dir(cache_dir);
+            let shared_state = app_dir.join("shared_queue_state.json");
+            let pipeline = youtube_pipeline::YouTubePipeline::with_cache_dir_and_state(
+                cache_dir,
+                Some(shared_state),
+            );
             app.manage(Mutex::new(Box::new(pipeline) as DynAudioPipeline));
 
             Ok(())
@@ -455,6 +472,7 @@ pub fn run() {
             queue_track,
             skip_track,
             get_queue,
+            get_shared_queue,
             livekit_connect,
             livekit_disconnect,
             livekit_participants,
