@@ -19,6 +19,11 @@
   let debugLogs: string[] = $state([]);
   let lastStatusLog = "";
   let participantPollInterval: ReturnType<typeof setInterval> | null = $state(null);
+  let voiceChatEnabled = $state(false);
+  let micTestActive = $state(false);
+  let micLevel = $state(0);
+  let micPollInterval: ReturnType<typeof setInterval> | null = $state(null);
+  let djBotMode = $state(false);
 
   function debugLog(msg: string) {
     const ts = new Date().toLocaleTimeString();
@@ -57,6 +62,28 @@
     }
   }
 
+  function startMicLevelPolling() {
+    if (micPollInterval) return;
+    pollMicLevel();
+    micPollInterval = setInterval(pollMicLevel, 200);
+  }
+
+  function stopMicLevelPolling() {
+    if (micPollInterval) {
+      clearInterval(micPollInterval);
+      micPollInterval = null;
+    }
+  }
+
+  async function pollMicLevel() {
+    try {
+      const level = await invoke<number>("get_mic_level");
+      micLevel = typeof level === "number" ? level : 0;
+    } catch {
+      // Outside Tauri
+    }
+  }
+
   // Check for saved setup on mount
   async function checkSavedSetup() {
     // Env vars take priority over localStorage
@@ -66,8 +93,13 @@
         livekitUrl = envConfig.livekitUrl;
         livekitToken = envConfig.livekitToken;
         setupComplete = true;
+        djBotMode = envConfig.djBot === "1";
         debugLog(`Using env var config (LIVEKIT_URL + LIVEKIT_TOKEN)`);
         await connectToLiveKit();
+        if (djBotMode) {
+          debugLog("DJ bot mode enabled");
+          await becomeDJ();
+        }
         return;
       }
     } catch {
@@ -143,6 +175,8 @@
     stopParticipantPolling();
     try {
       await invoke("livekit_disconnect");
+      await invoke("stop_voice_chat");
+      await invoke("stop_mic_test");
     } catch {
       // Running outside Tauri
     }
@@ -156,6 +190,10 @@
     isDJ = false;
     roomParticipants = [];
     musicVolume = 50;
+    voiceChatEnabled = false;
+    micTestActive = false;
+    micLevel = 0;
+    stopMicLevelPolling();
   }
 
   let canConnect = $derived(livekitUrl.length > 0 && livekitToken.length > 0);
@@ -238,6 +276,45 @@
       await invoke("skip_track");
     } catch (e) {
       debugLog(`skipTrack error: ${e}`);
+    }
+  }
+
+  async function setVoiceChat(enabled: boolean) {
+    try {
+      if (enabled) {
+        await invoke("start_voice_chat");
+        voiceChatEnabled = true;
+        startMicLevelPolling();
+      } else {
+        await invoke("stop_voice_chat");
+        voiceChatEnabled = false;
+        if (!micTestActive) {
+          stopMicLevelPolling();
+          micLevel = 0;
+        }
+      }
+    } catch (e) {
+      debugLog(`voice chat error: ${e}`);
+      voiceChatEnabled = false;
+    }
+  }
+
+  async function toggleMicTest() {
+    try {
+      if (!micTestActive) {
+        await invoke("start_mic_test");
+        micTestActive = true;
+        startMicLevelPolling();
+      } else {
+        await invoke("stop_mic_test");
+        micTestActive = false;
+        if (!voiceChatEnabled) {
+          stopMicLevelPolling();
+          micLevel = 0;
+        }
+      }
+    } catch (e) {
+      debugLog(`mic test error: ${e}`);
     }
   }
 
@@ -339,22 +416,38 @@
         {/each}
       </div>
 
-      {#if showSettings}
-        <div data-testid="settings-panel" class="settings-panel">
-          <h2>Settings</h2>
-          <label>
-            LiveKit Server URL
-            <input data-testid="livekit-url-input" type="text" bind:value={livekitUrl} placeholder="wss://your-server.livekit.cloud" />
-          </label>
-          <label>
-            Token
-            <textarea data-testid="settings-token" bind:value={livekitToken} rows="2"></textarea>
-          </label>
-          <div class="settings-actions">
-            <button data-testid="settings-save" onclick={async () => {
-              localStorage.setItem("gezellig-setup", JSON.stringify({ livekitUrl, livekitToken }));
-              try {
-                await invoke("save_settings", { livekitUrl });
+        {#if showSettings}
+          <div data-testid="settings-panel" class="settings-panel">
+            <h2>Settings</h2>
+            <label>
+              LiveKit Server URL
+              <input data-testid="livekit-url-input" type="text" bind:value={livekitUrl} placeholder="wss://your-server.livekit.cloud" />
+            </label>
+            <label>
+              Token
+              <textarea data-testid="settings-token" bind:value={livekitToken} rows="2"></textarea>
+            </label>
+            <div class="settings-section">
+              <h3>Voice Chat</h3>
+              <label class="toggle-row">
+                <input type="checkbox" checked={voiceChatEnabled} oninput={(e) => setVoiceChat((e.target as HTMLInputElement).checked)} />
+                <span>Enable voice chat</span>
+              </label>
+              <div class="mic-test">
+                <button data-testid="mic-test-button" class="btn btn-outline" onclick={toggleMicTest}>
+                  {micTestActive ? 'Stop Mic Test' : 'Start Mic Test'}
+                </button>
+                <div class="mic-meter" aria-hidden="true">
+                  <div class="mic-meter-fill" style={`width: ${micLevel}%`}></div>
+                </div>
+                <div class="mic-meter-label">{micLevel}%</div>
+              </div>
+            </div>
+            <div class="settings-actions">
+              <button data-testid="settings-save" onclick={async () => {
+                localStorage.setItem("gezellig-setup", JSON.stringify({ livekitUrl, livekitToken }));
+                try {
+                  await invoke("save_settings", { livekitUrl });
               } catch { /* outside Tauri */ }
               addNotification('Settings saved');
               showSettings = false;
@@ -775,6 +868,60 @@ h2 {
   color: #888;
 }
 
+.settings-section {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #f0edea;
+}
+
+.settings-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #666;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.75rem;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.toggle-row input {
+  margin: 0;
+}
+
+.mic-test {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.mic-meter {
+  height: 10px;
+  background: #f0edea;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid #e5e2df;
+}
+
+.mic-meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8cb87a, #f0b27a);
+  transition: width 0.1s ease;
+}
+
+.mic-meter-label {
+  font-size: 0.8rem;
+  color: #777;
+  min-width: 32px;
+  text-align: right;
+}
+
 .settings-panel input[type="text"],
 .settings-panel textarea {
   display: block;
@@ -982,6 +1129,14 @@ button.danger:hover {
     color: #e8e4e0;
     border-color: #4a4846;
   }
+  .settings-section { border-top-color: #3a3836; }
+  .settings-section h3 { color: #aaa; }
+  .toggle-row { color: #aaa; }
+  .mic-meter {
+    background: #2f2d2b;
+    border-color: #4a4846;
+  }
+  .mic-meter-label { color: #999; }
   .setup-screen input[type="text"],
   .setup-screen textarea {
     background: #353331;

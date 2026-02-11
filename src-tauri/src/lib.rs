@@ -3,6 +3,7 @@ mod dj_publisher;
 mod livekit_room;
 mod room;
 mod settings;
+mod voice_chat;
 mod youtube_pipeline;
 
 use audio::{AudioPipeline, DjStatus};
@@ -17,11 +18,20 @@ use tokio::sync::Mutex as TokioMutex;
 
 struct SettingsPath(std::path::PathBuf);
 struct PlaybackVolume(Arc<AtomicU8>);
+struct MicLevel(Arc<AtomicU8>);
 
 /// Holds the DJ publisher shutdown handle.
 struct DjPublisherHandle {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<tokio::task::JoinHandle<()>>,
+}
+
+struct VoiceChatHandle {
+    inner: voice_chat::VoiceChatHandle,
+}
+
+struct MicTestHandle {
+    inner: voice_chat::MicTestHandle,
 }
 
 /// Shared debug log buffer accessible from frontend.
@@ -230,6 +240,78 @@ fn get_music_volume(playback_volume: State<'_, PlaybackVolume>) -> Result<u8, St
 }
 
 #[tauri::command]
+async fn start_voice_chat(
+    lk_room: State<'_, TokioMutex<Option<LiveKitRoom>>>,
+    voice_handle: State<'_, TokioMutex<Option<VoiceChatHandle>>>,
+    mic_test: State<'_, TokioMutex<Option<MicTestHandle>>>,
+    mic_level: State<'_, MicLevel>,
+) -> Result<(), String> {
+    let room = {
+        let guard = lk_room.lock().await;
+        match guard.as_ref() {
+            Some(lk) => lk.get_room().await.ok_or("LiveKit not connected")?,
+            None => return Err("LiveKit not connected".into()),
+        }
+    };
+
+    if voice_handle.lock().await.is_some() {
+        return Ok(());
+    }
+
+    if let Some(handle) = mic_test.lock().await.take() {
+        voice_chat::stop_mic_test(handle.inner);
+    }
+
+    let handle = voice_chat::start_voice_chat(room, mic_level.0.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    *voice_handle.lock().await = Some(VoiceChatHandle { inner: handle });
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_voice_chat(
+    voice_handle: State<'_, TokioMutex<Option<VoiceChatHandle>>>,
+) -> Result<(), String> {
+    if let Some(handle) = voice_handle.lock().await.take() {
+        voice_chat::stop_voice_chat(handle.inner).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_mic_test(
+    voice_handle: State<'_, TokioMutex<Option<VoiceChatHandle>>>,
+    mic_test: State<'_, TokioMutex<Option<MicTestHandle>>>,
+    mic_level: State<'_, MicLevel>,
+) -> Result<(), String> {
+    if voice_handle.lock().await.is_some() {
+        return Ok(());
+    }
+    if mic_test.lock().await.is_some() {
+        return Ok(());
+    }
+    let handle = voice_chat::start_mic_test(mic_level.0.clone()).map_err(|e| e.to_string())?;
+    *mic_test.lock().await = Some(MicTestHandle { inner: handle });
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_mic_test(
+    mic_test: State<'_, TokioMutex<Option<MicTestHandle>>>,
+) -> Result<(), String> {
+    if let Some(handle) = mic_test.lock().await.take() {
+        voice_chat::stop_mic_test(handle.inner);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_mic_level(mic_level: State<'_, MicLevel>) -> Result<u8, String> {
+    Ok(mic_level.0.load(Ordering::Relaxed))
+}
+
+#[tauri::command]
 fn queue_track(pipeline: State<'_, Mutex<DynAudioPipeline>>, url: String) -> Result<(), String> {
     let p = pipeline.lock().map_err(|e| e.to_string())?;
     p.queue_track(url)
@@ -264,6 +346,12 @@ fn get_env_config() -> std::collections::HashMap<String, String> {
     }
     if let Ok(token) = std::env::var("LIVEKIT_TOKEN") {
         config.insert("livekitToken".to_string(), token);
+    }
+    if let Ok(bot) = std::env::var("GEZELLIG_DJ_BOT") {
+        config.insert("djBot".to_string(), bot);
+    }
+    if let Ok(url) = std::env::var("GEZELLIG_SHARED_QUEUE_URL") {
+        config.insert("sharedQueueUrl".to_string(), url);
     }
     config
 }
@@ -326,12 +414,16 @@ pub fn run() {
     let _ = DEBUG_LOG.set(DebugLogBuffer::new());
 
     let playback_volume = Arc::new(AtomicU8::new(50));
+    let mic_level = Arc::new(AtomicU8::new(0));
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(RoomState::new()))
         .manage(TokioMutex::new(None::<LiveKitRoom>))
         .manage(TokioMutex::new(None::<DjPublisherHandle>))
         .manage(PlaybackVolume(playback_volume))
+        .manage(MicLevel(mic_level))
+        .manage(TokioMutex::new(None::<VoiceChatHandle>))
+        .manage(TokioMutex::new(None::<MicTestHandle>))
         .setup(|app| {
             let app_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
             app.manage(SettingsPath(app_dir.join("settings.json")));
@@ -355,6 +447,11 @@ pub fn run() {
             get_dj_status,
             set_music_volume,
             get_music_volume,
+            start_voice_chat,
+            stop_voice_chat,
+            start_mic_test,
+            stop_mic_test,
+            get_mic_level,
             queue_track,
             skip_track,
             get_queue,

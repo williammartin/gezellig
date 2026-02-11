@@ -10,6 +10,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
+use serde_json::Value;
 use rusty_ytdl::{Video, VideoOptions, VideoQuality, VideoSearchOptions};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -308,6 +309,7 @@ pub struct YouTubePipeline {
     local_playback_disabled: Arc<std::sync::atomic::AtomicBool>,
     loop_running: Arc<std::sync::atomic::AtomicBool>,
     cache_dir: Option<std::path::PathBuf>,
+    shared_queue_url: Option<String>,
 }
 
 impl YouTubePipeline {
@@ -318,6 +320,7 @@ impl YouTubePipeline {
 
     pub fn with_cache_dir(cache_dir: Option<std::path::PathBuf>) -> Self {
         let (pcm_tx, pcm_rx) = mpsc::channel(1024);
+        let shared_queue_url = std::env::var("GEZELLIG_SHARED_QUEUE_URL").ok();
         Self {
             status: Arc::new(Mutex::new(DjStatus::Idle)),
             volume: Arc::new(AtomicU8::new(50)),
@@ -329,6 +332,7 @@ impl YouTubePipeline {
             local_playback_disabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             loop_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cache_dir,
+            shared_queue_url,
         }
     }
 }
@@ -359,9 +363,21 @@ impl AudioPipeline for YouTubePipeline {
             let local_disabled = self.local_playback_disabled.clone();
             let cache_dir = self.cache_dir.clone();
             let volume = self.volume.clone();
+            let shared_queue_url = self.shared_queue_url.clone();
 
             tokio::spawn(async move {
-                run_playback_loop(queue, status, active, pcm_sender, skip_rx, local_disabled, cache_dir, volume).await;
+                run_playback_loop(
+                    queue,
+                    status,
+                    active,
+                    pcm_sender,
+                    skip_rx,
+                    local_disabled,
+                    cache_dir,
+                    volume,
+                    shared_queue_url,
+                )
+                .await;
                 crate::dlog!("[DJ] Playback loop ended");
             });
         } else {
@@ -449,6 +465,7 @@ async fn run_playback_loop(
     local_playback_disabled: Arc<std::sync::atomic::AtomicBool>,
     cache_dir: Option<std::path::PathBuf>,
     volume: Arc<AtomicU8>,
+    shared_queue_url: Option<String>,
 ) {
     let source = YtDlpSource::new(cache_dir);
     crate::dlog!("[DJ] Playback loop started");
@@ -457,6 +474,29 @@ async fn run_playback_loop(
         // Check if still active
         if !*active.lock().unwrap_or_else(|e| e.into_inner()) {
             break;
+        }
+
+        if let Some(url) = shared_queue_url.as_ref() {
+            let should_fetch = queue
+                .lock()
+                .map(|q| q.is_empty())
+                .unwrap_or(true);
+            if should_fetch {
+                if let Ok(items) = fetch_shared_queue(url).await {
+                    if !items.is_empty() {
+                        if let Ok(mut q) = queue.lock() {
+                            for item in items {
+                                if !q.iter().any(|t| t.url == item) {
+                                    q.push(QueuedTrack {
+                                        url: item,
+                                        title: "Shared Queue".to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Pop next track from queue
@@ -620,6 +660,38 @@ async fn run_playback_loop(
         *s = DjStatus::Idle;
     }
     crate::dlog!("[DJ] Playback loop ended");
+}
+
+async fn fetch_shared_queue(url: &str) -> Result<Vec<String>, String> {
+    let resp = reqwest::get(url)
+        .await
+        .map_err(|e| format!("Shared queue fetch failed: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Shared queue read failed: {e}"))?;
+
+    if let Ok(list) = serde_json::from_str::<Vec<String>>(&body) {
+        return Ok(list.into_iter().filter(|s| !s.trim().is_empty()).collect());
+    }
+
+    if let Ok(json) = serde_json::from_str::<Value>(&body) {
+        if let Some(array) = json.as_array() {
+            let items = array
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter(|s| !s.trim().is_empty())
+                .collect();
+            return Ok(items);
+        }
+    }
+
+    let items = body
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    Ok(items)
 }
 
 #[cfg(test)]
