@@ -242,6 +242,18 @@ fn get_backend_logs() -> Vec<String> {
 }
 
 #[tauri::command]
+fn get_env_config() -> std::collections::HashMap<String, String> {
+    let mut config = std::collections::HashMap::new();
+    if let Ok(url) = std::env::var("LIVEKIT_URL") {
+        config.insert("livekitUrl".to_string(), url);
+    }
+    if let Ok(token) = std::env::var("LIVEKIT_TOKEN") {
+        config.insert("livekitToken".to_string(), token);
+    }
+    config
+}
+
+#[tauri::command]
 async fn livekit_connect(
     lk_room: State<'_, TokioMutex<Option<LiveKitRoom>>>,
     url: String,
@@ -330,6 +342,7 @@ pub fn run() {
             livekit_participants,
             livekit_is_connected,
             get_backend_logs,
+            get_env_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -39,11 +39,18 @@ pub fn spawn_audio_publisher(
         let rtc_source = RtcAudioSource::Native(source.clone());
         let track = LocalAudioTrack::create_audio_track("music", rtc_source);
 
+        let publish_options = TrackPublishOptions {
+            dtx: false, // Disable discontinuous transmission — we're streaming music, not voice
+            red: false,
+            source: TrackSource::Unknown,
+            ..Default::default()
+        };
+
         let publish_result = room
             .local_participant()
             .publish_track(
                 LocalTrack::Audio(track),
-                TrackPublishOptions::default(),
+                publish_options,
             )
             .await;
 
@@ -58,11 +65,12 @@ pub fn spawn_audio_publisher(
         let frame_size_samples = (SAMPLES_PER_CHANNEL * NUM_CHANNELS) as usize;
         let frame_size_bytes = frame_size_samples * 2; // i16 = 2 bytes
         let mut buffer: Vec<u8> = Vec::with_capacity(frame_size_bytes * 2);
+        let mut frames_sent: u64 = 0;
 
         loop {
             tokio::select! {
                 _ = &mut shutdown_rx => {
-                    crate::dlog!("Stopping audio publisher");
+                    crate::dlog!("Stopping audio publisher (sent {} frames)", frames_sent);
                     break;
                 }
                 data = pcm_rx.recv() => {
@@ -90,10 +98,16 @@ pub fn spawn_audio_publisher(
                                 if let Err(e) = source.capture_frame(&frame).await {
                                     crate::dlog!("Failed to capture audio frame: {e}");
                                 }
+                                frames_sent += 1;
+                                if frames_sent == 1 {
+                                    crate::dlog!("First audio frame captured and sent to LiveKit");
+                                } else if frames_sent % 1000 == 0 {
+                                    crate::dlog!("Audio frames sent: {} (~{}s)", frames_sent, frames_sent / 100);
+                                }
                             }
                         }
                         None => {
-                            crate::dlog!("PCM channel closed, stopping publisher");
+                            crate::dlog!("PCM channel closed, stopping publisher (sent {} frames)", frames_sent);
                             break;
                         }
                     }

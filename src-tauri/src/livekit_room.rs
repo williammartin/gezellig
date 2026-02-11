@@ -4,8 +4,10 @@
 //! and publishing/subscribing to audio tracks.
 
 use livekit::prelude::*;
+use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
+use futures_util::StreamExt;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Participant {
@@ -54,21 +56,22 @@ impl LiveKitRoom {
             while let Some(event) = events.recv().await {
                 match event {
                     RoomEvent::ParticipantConnected(participant) => {
-                        log::info!(
-                            "Participant connected: {} ({})",
-                            participant.name(),
-                            participant.identity()
-                        );
+                        crate::dlog!("[LK] Participant connected: {} ({})",
+                            participant.name(), participant.identity());
                     }
                     RoomEvent::ParticipantDisconnected(participant) => {
-                        log::info!(
-                            "Participant disconnected: {} ({})",
-                            participant.name(),
-                            participant.identity()
-                        );
+                        crate::dlog!("[LK] Participant disconnected: {} ({})",
+                            participant.name(), participant.identity());
+                    }
+                    RoomEvent::TrackSubscribed { track, publication: _, participant } => {
+                        crate::dlog!("[LK] Track subscribed from {}: sid={}, kind={:?}",
+                            participant.identity(), track.sid(), track.kind());
+                        if let RemoteTrack::Audio(audio_track) = track {
+                            Self::spawn_audio_playback(audio_track);
+                        }
                     }
                     RoomEvent::Disconnected { reason } => {
-                        log::info!("Disconnected from room: {reason:?}");
+                        crate::dlog!("[LK] Disconnected from room: {reason:?}");
                         break;
                     }
                     _ => {}
@@ -126,6 +129,58 @@ impl LiveKitRoom {
     pub async fn get_room(&self) -> Option<Arc<Room>> {
         let room_guard = self.room.lock().await;
         room_guard.clone()
+    }
+
+    /// Spawn a task that receives audio frames from a remote track and plays them locally.
+    fn spawn_audio_playback(track: RemoteAudioTrack) {
+        tokio::spawn(async move {
+            let rtc_track = track.rtc_track();
+            let mut audio_stream = NativeAudioStream::new(rtc_track, 48000, 2);
+            crate::dlog!("[LK] Audio playback stream started for track {}", track.sid());
+
+            // Rodio playback runs in a blocking thread
+            let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<(Vec<f32>, u32, u32)>();
+
+            std::thread::spawn(move || {
+                use rodio::{Sink, buffer::SamplesBuffer, stream::OutputStreamBuilder};
+                let stream = match OutputStreamBuilder::open_default_stream() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        crate::dlog!("[LK] Failed to open audio output for subscription: {e}");
+                        return;
+                    }
+                };
+                let sink = Sink::connect_new(stream.mixer());
+                crate::dlog!("[LK] Rodio sink ready for subscribed audio");
+
+                while let Ok((samples, sample_rate, channels)) = pcm_rx.recv() {
+                    let source = SamplesBuffer::new(channels as u16, sample_rate, samples);
+                    sink.append(source);
+                }
+                crate::dlog!("[LK] Audio playback thread ended");
+            });
+
+            let mut frames_received: u64 = 0;
+            while let Some(frame) = audio_stream.next().await {
+                frames_received += 1;
+                if frames_received == 1 {
+                    crate::dlog!("[LK] First audio frame received: rate={}, channels={}, samples={}",
+                        frame.sample_rate, frame.num_channels, frame.samples_per_channel);
+                } else if frames_received % 1000 == 0 {
+                    crate::dlog!("[LK] Audio frames received: {}", frames_received);
+                }
+
+                let f32_samples: Vec<f32> = frame.data.iter()
+                    .map(|&s| s as f32 / 32768.0)
+                    .collect();
+
+                if pcm_tx.send((f32_samples, frame.sample_rate, frame.num_channels)).is_err() {
+                    crate::dlog!("[LK] Audio playback channel closed");
+                    break;
+                }
+            }
+            crate::dlog!("[LK] Audio stream ended for track {}", track.sid());
+        });
     }
 }
 

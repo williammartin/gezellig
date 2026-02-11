@@ -39,7 +39,22 @@
   let displayName = $derived(extractIdentityFromToken(livekitToken));
 
   // Check for saved setup on mount
-  function checkSavedSetup() {
+  async function checkSavedSetup() {
+    // Env vars take priority over localStorage
+    try {
+      const envConfig: Record<string, string> = await invoke("get_env_config");
+      if (envConfig.livekitUrl && envConfig.livekitToken) {
+        livekitUrl = envConfig.livekitUrl;
+        livekitToken = envConfig.livekitToken;
+        setupComplete = true;
+        debugLog(`Using env var config (LIVEKIT_URL + LIVEKIT_TOKEN)`);
+        await connectToLiveKit();
+        return;
+      }
+    } catch {
+      // Env config not available
+    }
+
     try {
       const saved = localStorage.getItem("gezellig-setup");
       if (saved) {
