@@ -152,8 +152,12 @@
     try {
       await invoke("join_room");
     } catch { /* ok */ }
+    if (livekitConnected) {
+      // Already connected via setup
+    } else {
+      await connectToLiveKit();
+    }
     inRoom = true;
-    // If not polling LiveKit participants, show self
     if (!participantPollInterval) {
       roomParticipants = [displayName];
     }
@@ -161,15 +165,18 @@
   }
 
   async function leaveRoom() {
+    stopParticipantPolling();
+    try {
+      await invoke("livekit_disconnect");
+    } catch { /* ok */ }
     try {
       await invoke("leave_room");
     } catch { /* ok */ }
+    livekitConnected = false;
     inRoom = false;
     isMuted = false;
     isDJ = false;
-    if (!participantPollInterval) {
-      roomParticipants = [];
-    }
+    roomParticipants = [];
     addNotification('You left the room');
   }
 
