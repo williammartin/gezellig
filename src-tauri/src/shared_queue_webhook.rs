@@ -38,7 +38,7 @@ pub fn spawn_shared_queue_webhook(
     path: String,
     gh_path: String,
 ) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         if let Err(err) = run_webhook_listener(app, repo, path, gh_path).await {
             crate::dlog!("[Queue] Webhook listener error: {err}");
         }
