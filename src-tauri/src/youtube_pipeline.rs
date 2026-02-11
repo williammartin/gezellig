@@ -4,8 +4,9 @@
 //! decodes to PCM with symphonia, and streams through a channel for
 //! LiveKit publishing. Queue supports multiple tracks with auto-advance.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::sync::{
     atomic::{AtomicU8, Ordering},
     Arc, Mutex,
@@ -22,7 +23,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use tokio::sync::mpsc;
 
-use crate::audio::{AudioPipeline, DjStatus, NowPlaying};
+use crate::audio::{AudioPipeline, DjStatus, NowPlaying, SharedNowPlaying, SharedQueueSnapshot};
 
 /// Info about a resolved audio track.
 pub struct TrackInfo {
@@ -317,8 +318,24 @@ struct QueueEvent {
     #[serde(rename = "type")]
     event_type: String,
     url: Option<String>,
+    title: Option<String>,
     #[serde(rename = "ref")]
     ref_id: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct SharedNowPlayingInternal {
+    title: String,
+    url: String,
+    queued_id: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct SharedQueueData {
+    items: Vec<QueuedTrack>,
+    now_playing: Option<SharedNowPlayingInternal>,
+    max_id: u64,
+    skip_events: HashMap<u64, u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -484,6 +501,14 @@ impl AudioPipeline for YouTubePipeline {
     }
 
     fn skip_track(&self) -> Result<(), String> {
+        if let Some(cfg) = self.shared_queue.as_ref() {
+            let data = fetch_shared_queue_data(cfg)?;
+            if let Some(now) = data.now_playing {
+                if let Some(queued_id) = now.queued_id {
+                    append_skip_event(cfg, queued_id)?;
+                }
+            }
+        }
         if let Ok(tx) = self.skip_tx.lock() {
             if let Some(tx) = tx.as_ref() {
                 let _ = tx.send(true);
@@ -499,9 +524,14 @@ impl AudioPipeline for YouTubePipeline {
 
     fn shared_queue(&self) -> Option<Vec<String>> {
         let cfg = self.shared_queue.as_ref()?;
-        fetch_shared_queue(cfg)
+        fetch_shared_queue_data(cfg)
             .ok()
-            .map(|(items, _)| items.into_iter().map(|t| t.url).collect())
+            .map(|data| data.items.into_iter().map(|t| t.url).collect())
+    }
+
+    fn shared_queue_snapshot(&self) -> Option<SharedQueueSnapshot> {
+        let cfg = self.shared_queue.as_ref()?;
+        fetch_shared_queue_data(cfg).ok().map(shared_queue_snapshot_from_data)
     }
 
     fn clear_shared_queue(&self) -> Result<(), String> {
@@ -550,13 +580,13 @@ async fn run_playback_loop(
                 .map(|q| q.is_empty())
                 .unwrap_or(true);
             if should_fetch {
-                if let Ok((items, last_seen)) = fetch_shared_queue(cfg) {
-                    if !items.is_empty() {
+                if let Ok(data) = fetch_shared_queue_data(cfg) {
+                    if !data.items.is_empty() {
                         if let Ok(mut q) = queue.lock() {
-                            q.extend(items);
+                            q.extend(data.items);
                         }
                     }
-                    let _ = write_shared_state(cfg, SharedQueueState { last_seen_id: last_seen });
+                    let _ = write_shared_state(cfg, SharedQueueState { last_seen_id: data.max_id });
                 }
             }
         }
@@ -614,6 +644,13 @@ async fn run_playback_loop(
                 track: track_info.title.clone(),
                 artist: String::new(),
             });
+        }
+        let mut playing_event_id = None;
+        if let (Some(cfg), Some(queued_id)) = (shared_queue.as_ref(), track.queued_id) {
+            match append_playing_event(cfg, queued_id, &track_info.title, &track.url) {
+                Ok(id) => playing_event_id = Some(id),
+                Err(err) => crate::dlog!("[DJ] Failed to append playing event: {err}"),
+            }
         }
 
         // Audio data is already raw PCM s16le at 48kHz stereo from yt-dlp|ffmpeg
@@ -675,6 +712,8 @@ async fn run_playback_loop(
         // Stream PCM through channel for LiveKit publishing
         let chunk_samples = 960; // 480 samples/channel * 2 channels = 10ms at 48kHz
         let mut skipped = false;
+        let mut last_skip_check = Instant::now();
+        let skip_check_interval = std::time::Duration::from_secs(2);
 
         for chunk in samples.chunks(chunk_samples) {
             if skip_rx.has_changed().unwrap_or(false) {
@@ -682,6 +721,23 @@ async fn run_playback_loop(
                 let _ = stop_tx.send(());
                 skipped = true;
                 break;
+            }
+
+            if let (Some(cfg), Some(queued_id), Some(event_id)) =
+                (shared_queue.as_ref(), track.queued_id, playing_event_id)
+            {
+                if last_skip_check.elapsed() >= skip_check_interval {
+                    match shared_skip_requested(cfg, queued_id, event_id) {
+                        Ok(true) => {
+                            let _ = stop_tx.send(());
+                            skipped = true;
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(err) => crate::dlog!("[DJ] Failed to check skip events: {err}"),
+                    }
+                    last_skip_check = Instant::now();
+                }
             }
 
             if !*active.lock().unwrap_or_else(|e| e.into_inner()) {
@@ -735,13 +791,15 @@ async fn run_playback_loop(
     crate::dlog!("[DJ] Playback loop ended");
 }
 
-fn fetch_shared_queue(cfg: &SharedQueueConfig) -> Result<(Vec<QueuedTrack>, u64), String> {
+fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, String> {
     let (content, _) = read_repo_file(cfg)?;
     let mut max_id = 0;
     let mut queued: Vec<(u64, String)> = Vec::new();
-    let mut played: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    let mut failed: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut played: HashSet<u64> = HashSet::new();
+    let mut failed: HashSet<u64> = HashSet::new();
+    let mut skip_events: HashMap<u64, u64> = HashMap::new();
     let mut last_cleared_id = 0;
+    let mut now_playing: Option<SharedNowPlayingInternal> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -767,11 +825,27 @@ fn fetch_shared_queue(cfg: &SharedQueueConfig) -> Result<(Vec<QueuedTrack>, u64)
                             failed.insert(ref_id);
                         }
                     }
+                    "playing" => {
+                        if let (Some(title), Some(url)) = (event.title, event.url) {
+                            now_playing = Some(SharedNowPlayingInternal {
+                                title,
+                                url,
+                                queued_id: event.ref_id,
+                            });
+                        }
+                    }
+                    "skip" => {
+                        if let Some(ref_id) = event.ref_id {
+                            skip_events.insert(ref_id, event.id);
+                        }
+                    }
                     "cleared" => {
                         last_cleared_id = last_cleared_id.max(event.id);
                         queued.clear();
                         played.clear();
                         failed.clear();
+                        skip_events.clear();
+                        now_playing = None;
                     }
                     _ => {}
                 }
@@ -792,7 +866,39 @@ fn fetch_shared_queue(cfg: &SharedQueueConfig) -> Result<(Vec<QueuedTrack>, u64)
             queued_id: Some(id),
         })
         .collect();
-    Ok((items, max_id))
+
+    if let Some(ref_id) = now_playing.as_ref().and_then(|now| now.queued_id) {
+        if played.contains(&ref_id) || failed.contains(&ref_id) {
+            now_playing = None;
+        }
+    }
+
+    Ok(SharedQueueData {
+        items,
+        now_playing,
+        max_id,
+        skip_events,
+    })
+}
+
+fn shared_queue_snapshot_from_data(data: SharedQueueData) -> SharedQueueSnapshot {
+    let now_playing = data.now_playing.map(|now| SharedNowPlaying {
+        title: now.title,
+        url: now.url,
+    });
+    SharedQueueSnapshot {
+        queue: data.items.into_iter().map(|t| t.url).collect(),
+        now_playing,
+    }
+}
+
+fn shared_skip_requested(cfg: &SharedQueueConfig, queued_id: u64, since_id: u64) -> Result<bool, String> {
+    let data = fetch_shared_queue_data(cfg)?;
+    Ok(data
+        .skip_events
+        .get(&queued_id)
+        .map(|event_id| *event_id > since_id)
+        .unwrap_or(false))
 }
 
 fn read_repo_file(cfg: &SharedQueueConfig) -> Result<(String, Option<String>), String> {
@@ -882,6 +988,30 @@ fn append_played_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, S
 
 fn append_failed_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, String> {
     append_event_with_ref(cfg, "failed", queued_id)
+}
+
+fn append_playing_event(
+    cfg: &SharedQueueConfig,
+    queued_id: u64,
+    title: &str,
+    url: &str,
+) -> Result<u64, String> {
+    let title = title.to_string();
+    let url = url.to_string();
+    let event_builder = move |next_id| {
+        serde_json::json!({
+            "id": next_id,
+            "type": "playing",
+            "ref": queued_id,
+            "title": title,
+            "url": url,
+        })
+    };
+    append_event_with_retry(cfg, event_builder)
+}
+
+fn append_skip_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, String> {
+    append_event_with_ref(cfg, "skip", queued_id)
 }
 
 fn append_cleared_event(cfg: &SharedQueueConfig) -> Result<u64, String> {

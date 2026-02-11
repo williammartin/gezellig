@@ -14,6 +14,12 @@ test.describe('Queue', () => {
     await expect(page.locator('[data-testid="add-to-queue-button"]')).toBeVisible();
   });
 
+  test('shows now playing panel and skip button', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('[data-testid="now-playing"]')).toBeVisible();
+    await expect(page.locator('[data-testid="skip-track-button"]')).toBeVisible();
+  });
+
   test('can add URL to queue', async ({ page }) => {
     await page.goto('/');
     await page.locator('[data-testid="queue-url-input"]').fill('https://youtube.com/watch?v=test');

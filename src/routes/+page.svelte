@@ -12,6 +12,11 @@
   let notifications: string[] = $state([]);
   let djQueueUrl = $state("");
   let djQueue: string[] = $state([]);
+  type SharedQueueState = {
+    queue: string[];
+    nowPlaying: { title: string; url: string } | null;
+  };
+  let nowPlaying: SharedQueueState["nowPlaying"] = $state(null);
   let showDebug = $state(false);
   let debugLogs: string[] = $state([]);
   let participantPollInterval: ReturnType<typeof setInterval> | null = $state(null);
@@ -233,10 +238,12 @@
 
   async function refreshQueue() {
     try {
-      const queue = await invoke<string[]>("get_shared_queue");
-      djQueue = queue;
+      const state = await invoke<SharedQueueState>("get_shared_queue_state");
+      djQueue = state.queue || [];
+      nowPlaying = state.nowPlaying ?? null;
     } catch {
       // Outside Tauri
+      nowPlaying = null;
     }
   }
 
@@ -247,6 +254,16 @@
     } catch {
       // Outside Tauri
       djQueue = [];
+      nowPlaying = null;
+    }
+  }
+
+  async function skipTrack() {
+    try {
+      await invoke("skip_track");
+      debugLog("skip_track OK");
+    } catch (e) {
+      debugLog(`skip_track error: ${e}`);
     }
   }
 
@@ -421,7 +438,19 @@
                 <input data-testid="queue-url-input" type="text" placeholder="Paste YouTube URL..." bind:value={djQueueUrl} onkeydown={(e) => e.key === 'Enter' && addToQueue()} />
                 <button data-testid="add-to-queue-button" class="btn" onclick={addToQueue}>Add to Queue</button>
               </div>
+              <div data-testid="now-playing" class="queue-list">
+                <p class="queue-label">Now Playing</p>
+                {#if nowPlaying}
+                  <div class="queue-item">{nowPlaying.title}</div>
+                  <div class="queue-item">
+                    <a href={nowPlaying.url} target="_blank" rel="noreferrer">{nowPlaying.url}</a>
+                  </div>
+                {:else}
+                  <p class="empty-state">Nothing playing</p>
+                {/if}
+              </div>
               <div class="queue-actions">
+                <button data-testid="skip-track-button" class="btn btn-outline" onclick={skipTrack}>Skip</button>
                 <button data-testid="clear-queue-button" class="btn btn-outline" onclick={clearQueue}>Clear Queue</button>
               </div>
               {#if djQueue.length > 0}

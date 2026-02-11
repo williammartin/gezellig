@@ -6,7 +6,7 @@ mod settings;
 mod voice_chat;
 mod youtube_pipeline;
 
-use audio::{AudioPipeline, DjStatus};
+use audio::{AudioPipeline, DjStatus, SharedQueueSnapshot};
 use livekit_room::LiveKitRoom;
 use room::RoomState;
 use settings::Settings;
@@ -340,6 +340,21 @@ fn get_shared_queue(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<Vec<
 }
 
 #[tauri::command]
+fn get_shared_queue_state(
+    pipeline: State<'_, Mutex<DynAudioPipeline>>,
+) -> Result<SharedQueueSnapshot, String> {
+    let p = pipeline.lock().map_err(|e| e.to_string())?;
+    if let Some(snapshot) = p.shared_queue_snapshot() {
+        Ok(snapshot)
+    } else {
+        Ok(SharedQueueSnapshot {
+            queue: p.get_queue(),
+            now_playing: None,
+        })
+    }
+}
+
+#[tauri::command]
 fn clear_shared_queue(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<(), String> {
     let p = pipeline.lock().map_err(|e| e.to_string())?;
     p.clear_shared_queue()
@@ -479,6 +494,7 @@ pub fn run() {
             skip_track,
             get_queue,
             get_shared_queue,
+            get_shared_queue_state,
             clear_shared_queue,
             livekit_connect,
             livekit_disconnect,

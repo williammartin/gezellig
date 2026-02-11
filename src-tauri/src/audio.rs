@@ -14,6 +14,19 @@ pub struct NowPlaying {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedNowPlaying {
+    pub title: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedQueueSnapshot {
+    pub queue: Vec<String>,
+    pub now_playing: Option<SharedNowPlaying>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DjStatus {
     Idle,
     Loading,
@@ -47,6 +60,11 @@ pub trait AudioPipeline: Send + Sync {
 
     /// Get shared queue if configured.
     fn shared_queue(&self) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Get shared queue snapshot (queue + now playing) if configured.
+    fn shared_queue_snapshot(&self) -> Option<SharedQueueSnapshot> {
         None
     }
 
