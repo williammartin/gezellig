@@ -575,10 +575,17 @@ async fn run_playback_loop(
                 .flat_map(|s| s.to_le_bytes())
                 .collect();
 
-            // Channel backpressure (capacity 1024) naturally paces sending
-            if pcm_sender.send(bytes).await.is_err() {
-                break;
+            // try_send: drop chunk if channel full or no consumer (non-blocking)
+            match pcm_sender.try_send(bytes) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    // Channel full — consumer can't keep up, drop this chunk
+                }
             }
+
+            // Pace at real-time so we don't spin-loop when no consumer
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
         if skipped {
