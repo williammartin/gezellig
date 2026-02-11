@@ -9,6 +9,7 @@
   let livekitToken = $state("");
   let sharedQueueRepo = $state("williammartin/gezellig-queue");
   let sharedQueueFile = $state("queue.ndjson");
+  let ghPath = $state("gh");
   let setupComplete = $state(false);
   let livekitConnected = $state(false);
   let notifications: string[] = $state([]);
@@ -102,6 +103,9 @@
         if (envConfig.sharedQueueFile) {
           sharedQueueFile = envConfig.sharedQueueFile;
         }
+        if (envConfig.ghPath) {
+          ghPath = envConfig.ghPath;
+        }
         setupComplete = true;
         djBotMode = envConfig.djBot === "1";
         debugLog(`Using env var config (LIVEKIT_URL + LIVEKIT_TOKEN)`);
@@ -120,6 +124,7 @@
         livekitToken = data.livekitToken || "";
         sharedQueueRepo = data.sharedQueueRepo || sharedQueueRepo;
         sharedQueueFile = data.sharedQueueFile || sharedQueueFile;
+        ghPath = data.ghPath || ghPath;
         if (livekitUrl && livekitToken) {
           setupComplete = true;
           connectToLiveKit();
@@ -194,6 +199,7 @@
       livekitToken,
       sharedQueueRepo,
       sharedQueueFile,
+      ghPath,
     }));
     setupComplete = true;
     await connectToLiveKit();
@@ -216,6 +222,7 @@
     livekitToken = "";
     sharedQueueRepo = "williammartin/gezellig-queue";
     sharedQueueFile = "queue.ndjson";
+    ghPath = "gh";
     inRoom = false;
     roomParticipants = [];
     musicVolume = 50;
@@ -400,6 +407,10 @@
               Shared Queue File
               <input data-testid="settings-queue-file" type="text" bind:value={sharedQueueFile} />
             </label>
+            <label>
+              GH Path
+              <input data-testid="settings-gh-path" type="text" bind:value={ghPath} />
+            </label>
             <div class="settings-section">
               <h3>Voice Chat</h3>
               <label class="toggle-row">
@@ -423,12 +434,14 @@
                   livekitToken,
                   sharedQueueRepo,
                   sharedQueueFile,
+                  ghPath,
                 }));
                 try {
                   await invoke("save_settings", {
                     livekitUrl,
                     sharedQueueRepo,
                     sharedQueueFile,
+                    ghPath,
                   });
               } catch { /* outside Tauri */ }
               addNotification('Settings saved');

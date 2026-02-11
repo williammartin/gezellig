@@ -4,17 +4,39 @@ use anyhow::{Context, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
+    #[serde(default = "default_livekit_url")]
     pub livekit_url: String,
+    #[serde(default = "default_shared_queue_repo")]
     pub shared_queue_repo: String,
+    #[serde(default = "default_shared_queue_file")]
     pub shared_queue_file: String,
+    #[serde(default = "default_gh_path")]
+    pub gh_path: String,
+}
+
+fn default_livekit_url() -> String {
+    String::new()
+}
+
+fn default_shared_queue_repo() -> String {
+    "williammartin/gezellig-queue".to_string()
+}
+
+fn default_shared_queue_file() -> String {
+    "queue.ndjson".to_string()
+}
+
+fn default_gh_path() -> String {
+    "gh".to_string()
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            livekit_url: String::new(),
-            shared_queue_repo: "williammartin/gezellig-queue".to_string(),
-            shared_queue_file: "queue.ndjson".to_string(),
+            livekit_url: default_livekit_url(),
+            shared_queue_repo: default_shared_queue_repo(),
+            shared_queue_file: default_shared_queue_file(),
+            gh_path: default_gh_path(),
         }
     }
 }
@@ -51,6 +73,7 @@ mod tests {
         assert_eq!(settings.livekit_url, "");
         assert_eq!(settings.shared_queue_repo, "williammartin/gezellig-queue");
         assert_eq!(settings.shared_queue_file, "queue.ndjson");
+        assert_eq!(settings.gh_path, "gh");
     }
 
     #[test]
@@ -65,6 +88,7 @@ mod tests {
             livekit_url: "wss://example.livekit.cloud".to_string(),
             shared_queue_repo: "owner/repo".to_string(),
             shared_queue_file: "queue.ndjson".to_string(),
+            gh_path: "/usr/local/bin/gh".to_string(),
         };
 
         assert!(settings.save(&path).is_ok());

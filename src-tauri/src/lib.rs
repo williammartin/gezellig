@@ -125,11 +125,13 @@ fn save_settings(
     livekit_url: String,
     shared_queue_repo: String,
     shared_queue_file: String,
+    gh_path: String,
 ) -> Result<(), String> {
     let settings = Settings {
         livekit_url,
         shared_queue_repo,
         shared_queue_file,
+        gh_path,
     };
     settings.save(&settings_path.0).map_err(|e| e.to_string())
 }
@@ -391,6 +393,9 @@ fn get_env_config() -> std::collections::HashMap<String, String> {
     if let Ok(path) = std::env::var("GEZELLIG_SHARED_QUEUE_FILE") {
         config.insert("sharedQueueFile".to_string(), path);
     }
+    if let Ok(path) = std::env::var("GEZELLIG_GH_PATH") {
+        config.insert("ghPath".to_string(), path);
+    }
     config
 }
 
@@ -473,7 +478,7 @@ pub fn run() {
             let pipeline = youtube_pipeline::YouTubePipeline::with_cache_dir_and_state(
                 cache_dir,
                 Some(shared_state),
-                Some((settings.shared_queue_repo, settings.shared_queue_file)),
+                Some((settings.shared_queue_repo, settings.shared_queue_file, settings.gh_path)),
             );
             app.manage(Mutex::new(Box::new(pipeline) as DynAudioPipeline));
 

@@ -70,9 +70,12 @@ test.describe('Settings', () => {
     await page.locator('[data-testid="settings-button"]').click();
     const repoField = page.locator('[data-testid="settings-queue-repo"]');
     const fileField = page.locator('[data-testid="settings-queue-file"]');
+    const ghPathField = page.locator('[data-testid="settings-gh-path"]');
     await expect(repoField).toBeVisible();
     await expect(fileField).toBeVisible();
+    await expect(ghPathField).toBeVisible();
     await expect(repoField).toHaveValue('williammartin/gezellig-queue');
     await expect(fileField).toHaveValue('queue.ndjson');
+    await expect(ghPathField).toHaveValue('gh');
   });
 });

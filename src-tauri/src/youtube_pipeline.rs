@@ -305,6 +305,7 @@ struct SharedQueueConfig {
     repo: String,
     path: String,
     state_path: std::path::PathBuf,
+    gh_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -370,20 +371,27 @@ impl YouTubePipeline {
     pub fn with_cache_dir_and_state(
         cache_dir: Option<std::path::PathBuf>,
         shared_state_path: Option<std::path::PathBuf>,
-        shared_queue_defaults: Option<(String, String)>,
+        shared_queue_defaults: Option<(String, String, String)>,
     ) -> Self {
         let (pcm_tx, pcm_rx) = mpsc::channel(1024);
-        let default_repo = shared_queue_defaults.as_ref().map(|(repo, _)| repo.clone());
-        let default_path = shared_queue_defaults.as_ref().map(|(_, path)| path.clone());
+        let default_repo = shared_queue_defaults.as_ref().map(|(repo, _, _)| repo.clone());
+        let default_path = shared_queue_defaults.as_ref().map(|(_, path, _)| path.clone());
+        let default_gh = shared_queue_defaults.as_ref().map(|(_, _, gh)| gh.clone());
         let shared_queue = match (
             std::env::var("GEZELLIG_SHARED_QUEUE_REPO").ok().or(default_repo),
             std::env::var("GEZELLIG_SHARED_QUEUE_FILE").ok().or(default_path),
+            std::env::var("GEZELLIG_GH_PATH").ok().or(default_gh),
             shared_state_path,
         ) {
-            (Some(repo), Some(path), Some(state_path)) => Some(SharedQueueConfig {
+            (Some(repo), Some(path), Some(gh_path), Some(state_path)) => Some(SharedQueueConfig {
                 repo,
                 path,
                 state_path,
+                gh_path: if gh_path.trim().is_empty() {
+                    "gh".to_string()
+                } else {
+                    gh_path
+                },
             }),
             _ => None,
         };
@@ -905,7 +913,7 @@ fn shared_skip_requested(cfg: &SharedQueueConfig, queued_id: u64, since_id: u64)
 }
 
 fn read_repo_file(cfg: &SharedQueueConfig) -> Result<(String, Option<String>), String> {
-    let output = std::process::Command::new("gh")
+    let output = std::process::Command::new(&cfg.gh_path)
         .args([
             "api",
             &format!("repos/{}/contents/{}", cfg.repo, cfg.path),
@@ -953,7 +961,7 @@ fn write_repo_file(cfg: &SharedQueueConfig, content: &str, sha: Option<String>) 
         args.push("-f".to_string());
         args.push(format!("sha={sha}"));
     }
-    let output = std::process::Command::new("gh")
+    let output = std::process::Command::new(&cfg.gh_path)
         .args(args)
         .output()
         .map_err(|e| format!("Failed to run gh api: {e}"))?;
