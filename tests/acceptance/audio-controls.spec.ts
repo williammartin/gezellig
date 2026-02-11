@@ -3,7 +3,6 @@ import { test, expect } from './fixtures';
 test.describe('Audio Controls', () => {
   test('shows mute button when in the room', async ({ page }) => {
     await page.goto('/');
-    await page.locator('[data-testid="join-room-button"]').click();
     const muteButton = page.locator('[data-testid="mute-button"]');
     await expect(muteButton).toBeVisible();
     await expect(muteButton).toContainText('Mute');
@@ -11,7 +10,6 @@ test.describe('Audio Controls', () => {
 
   test('toggles to unmute when muted', async ({ page }) => {
     await page.goto('/');
-    await page.locator('[data-testid="join-room-button"]').click();
     await page.locator('[data-testid="mute-button"]').click();
     const unmuteButton = page.locator('[data-testid="mute-button"]');
     await expect(unmuteButton).toContainText('Unmute');

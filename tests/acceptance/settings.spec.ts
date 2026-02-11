@@ -34,12 +34,6 @@ test.describe('Settings', () => {
     await expect(page.locator('.sidebar-username')).toContainText('You');
   });
 
-  test('display name from JWT is used when joining the room', async ({ page }) => {
-    await page.goto('/');
-    await page.locator('[data-testid="join-room-button"]').click();
-    await expect(page.locator('[data-testid="room"]')).toContainText('You');
-  });
-
   test('has a save button that confirms settings are saved', async ({ page }) => {
     await page.goto('/');
     await page.locator('[data-testid="settings-button"]').click();

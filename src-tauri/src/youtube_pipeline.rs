@@ -306,6 +306,7 @@ pub struct YouTubePipeline {
     skip_tx: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
     /// When true, skip local rodio playback (audio goes to LiveKit only).
     local_playback_disabled: Arc<std::sync::atomic::AtomicBool>,
+    loop_running: Arc<std::sync::atomic::AtomicBool>,
     cache_dir: Option<std::path::PathBuf>,
 }
 
@@ -326,6 +327,7 @@ impl YouTubePipeline {
             pcm_receiver: Mutex::new(Some(pcm_rx)),
             skip_tx: Mutex::new(None),
             local_playback_disabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            loop_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cache_dir,
         }
     }
@@ -344,8 +346,10 @@ impl AudioPipeline for YouTubePipeline {
             *tx = Some(skip_tx);
         }
 
-        // Only spawn if inside a tokio runtime
-        if tokio::runtime::Handle::try_current().is_ok() {
+        // Only spawn if inside a tokio runtime and no loop is already running
+        if tokio::runtime::Handle::try_current().is_ok()
+            && !self.loop_running.swap(true, Ordering::SeqCst)
+        {
             crate::dlog!("[DJ] Spawning playback loop");
             let queue = self.queue.clone();
             let status = self.status.clone();
@@ -353,10 +357,15 @@ impl AudioPipeline for YouTubePipeline {
             let pcm_sender = self.pcm_sender.clone();
             let local_disabled = self.local_playback_disabled.clone();
             let cache_dir = self.cache_dir.clone();
+            let loop_running = self.loop_running.clone();
 
             tokio::spawn(async move {
                 run_playback_loop(queue, status, active, pcm_sender, skip_rx, local_disabled, cache_dir).await;
+                loop_running.store(false, Ordering::SeqCst);
+                crate::dlog!("[DJ] Playback loop ended");
             });
+        } else {
+            crate::dlog!("[DJ] Playback loop already running, reusing");
         }
 
         Ok(())

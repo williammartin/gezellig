@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
 
-  let inRoom = $state(false);
+  let inRoom = $state(true);
   let isMuted = $state(false);
   let isDJ = $state(false);
   let roomParticipants: string[] = $state([]);
@@ -152,31 +152,17 @@
     try {
       await invoke("join_room");
     } catch { /* ok */ }
-    if (livekitConnected) {
-      // Already connected via setup
-    } else {
-      await connectToLiveKit();
-    }
     inRoom = true;
-    if (!participantPollInterval) {
-      roomParticipants = [displayName];
-    }
     addNotification('You joined the room');
   }
 
   async function leaveRoom() {
-    stopParticipantPolling();
-    try {
-      await invoke("livekit_disconnect");
-    } catch { /* ok */ }
     try {
       await invoke("leave_room");
     } catch { /* ok */ }
-    livekitConnected = false;
     inRoom = false;
     isMuted = false;
     isDJ = false;
-    roomParticipants = [];
     addNotification('You left the room');
   }
 
@@ -380,12 +366,10 @@
         </section>
 
         <div class="actions">
-          {#if inRoom}
             <div class="controls">
               <button data-testid="mute-button" class="btn" onclick={toggleMute}>
                 {isMuted ? '🔇 Unmute' : '🎤 Mute'}
               </button>
-              <button data-testid="leave-room-button" class="btn btn-outline" onclick={leaveRoom}>Leave Room</button>
             </div>
 
             {#if isDJ}
@@ -424,9 +408,6 @@
             {:else}
               <button data-testid="become-dj-button" class="btn" onclick={becomeDJ}>🎧 Become DJ</button>
             {/if}
-          {:else}
-            <button data-testid="join-room-button" class="btn btn-primary" onclick={joinRoom}>Join Room</button>
-          {/if}
         </div>
       {/if}
     </main>
