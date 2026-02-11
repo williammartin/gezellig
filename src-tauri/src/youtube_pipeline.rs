@@ -849,28 +849,14 @@ fn write_shared_state(cfg: &SharedQueueConfig, state: SharedQueueState) -> Resul
 }
 
 fn append_queue_event(cfg: &SharedQueueConfig, url: &str) -> Result<u64, String> {
-    let (content, sha) = read_repo_file(cfg).unwrap_or((String::new(), None));
-    let mut max_id = 0;
-    for line in content.lines() {
-        if let Ok(event) = serde_json::from_str::<QueueEvent>(line) {
-            max_id = max_id.max(event.id);
-        }
-    }
-    let next_id = max_id + 1;
-    let event = serde_json::json!({
-        "id": next_id,
-        "type": "queued",
-        "url": url,
-    });
-    let mut new_content = content;
-    if !new_content.ends_with('\n') && !new_content.is_empty() {
-        new_content.push('\n');
-    }
-    new_content.push_str(&event.to_string());
-    new_content.push('\n');
-    write_repo_file(cfg, &new_content, sha)?;
-    write_shared_state(cfg, SharedQueueState { last_seen_id: next_id })?;
-    Ok(next_id)
+    let event_builder = |next_id| {
+        serde_json::json!({
+            "id": next_id,
+            "type": "queued",
+            "url": url,
+        })
+    };
+    append_event_with_retry(cfg, event_builder)
 }
 
 fn append_played_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, String> {
@@ -882,28 +868,50 @@ fn append_failed_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, S
 }
 
 fn append_event_with_ref(cfg: &SharedQueueConfig, event_type: &str, queued_id: u64) -> Result<u64, String> {
-    let (content, sha) = read_repo_file(cfg).unwrap_or((String::new(), None));
-    let mut max_id = 0;
-    for line in content.lines() {
-        if let Ok(event) = serde_json::from_str::<QueueEvent>(line) {
-            max_id = max_id.max(event.id);
+    let event_builder = |next_id| {
+        serde_json::json!({
+            "id": next_id,
+            "type": event_type,
+            "ref": queued_id,
+        })
+    };
+    append_event_with_retry(cfg, event_builder)
+}
+
+fn append_event_with_retry<F>(cfg: &SharedQueueConfig, build_event: F) -> Result<u64, String>
+where
+    F: Fn(u64) -> serde_json::Value,
+{
+    for attempt in 0..2 {
+        let (content, sha) = read_repo_file(cfg).unwrap_or((String::new(), None));
+        let mut max_id = 0;
+        for line in content.lines() {
+            if let Ok(event) = serde_json::from_str::<QueueEvent>(line) {
+                max_id = max_id.max(event.id);
+            }
+        }
+        let next_id = max_id + 1;
+        let event = build_event(next_id);
+        let mut new_content = content;
+        if !new_content.ends_with('\n') && !new_content.is_empty() {
+            new_content.push('\n');
+        }
+        new_content.push_str(&event.to_string());
+        new_content.push('\n');
+        match write_repo_file(cfg, &new_content, sha) {
+            Ok(()) => {
+                write_shared_state(cfg, SharedQueueState { last_seen_id: next_id })?;
+                return Ok(next_id);
+            }
+            Err(err) => {
+                if attempt == 0 && err.contains("409") {
+                    continue;
+                }
+                return Err(err);
+            }
         }
     }
-    let next_id = max_id + 1;
-    let event = serde_json::json!({
-        "id": next_id,
-        "type": event_type,
-        "ref": queued_id,
-    });
-    let mut new_content = content;
-    if !new_content.ends_with('\n') && !new_content.is_empty() {
-        new_content.push('\n');
-    }
-    new_content.push_str(&event.to_string());
-    new_content.push('\n');
-    write_repo_file(cfg, &new_content, sha)?;
-    write_shared_state(cfg, SharedQueueState { last_seen_id: next_id })?;
-    Ok(next_id)
+    Err("Failed to append event after retry".to_string())
 }
 
 #[cfg(test)]
