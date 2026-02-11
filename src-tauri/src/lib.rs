@@ -360,11 +360,11 @@ fn get_env_config() -> std::collections::HashMap<String, String> {
     if let Ok(bot) = std::env::var("GEZELLIG_DJ_BOT") {
         config.insert("djBot".to_string(), bot);
     }
-    if let Ok(gist_id) = std::env::var("GEZELLIG_SHARED_QUEUE_GIST") {
-        config.insert("sharedQueueGist".to_string(), gist_id);
+    if let Ok(repo) = std::env::var("GEZELLIG_SHARED_QUEUE_REPO") {
+        config.insert("sharedQueueRepo".to_string(), repo);
     }
-    if let Ok(filename) = std::env::var("GEZELLIG_SHARED_QUEUE_FILE") {
-        config.insert("sharedQueueFile".to_string(), filename);
+    if let Ok(path) = std::env::var("GEZELLIG_SHARED_QUEUE_FILE") {
+        config.insert("sharedQueueFile".to_string(), path);
     }
     config
 }

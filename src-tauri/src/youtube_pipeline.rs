@@ -5,13 +5,13 @@
 //! LiveKit publishing. Queue supports multiple tracks with auto-advance.
 
 use std::io::Cursor;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{
     atomic::{AtomicU8, Ordering},
     Arc, Mutex,
 };
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use rusty_ytdl::{Video, VideoOptions, VideoQuality, VideoSearchOptions};
 use symphonia::core::audio::SampleBuffer;
@@ -301,8 +301,8 @@ pub struct QueuedTrack {
 
 #[derive(Debug, Clone)]
 struct SharedQueueConfig {
-    gist_id: String,
-    filename: String,
+    repo: String,
+    path: String,
     state_path: std::path::PathBuf,
 }
 
@@ -319,6 +319,13 @@ struct QueueEvent {
     url: Option<String>,
     #[serde(rename = "ref")]
     ref_id: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoFileResponse {
+    content: String,
+    encoding: String,
+    sha: String,
 }
 
 /// Audio pipeline backed by YouTube audio via rusty_ytdl.
@@ -349,13 +356,13 @@ impl YouTubePipeline {
     ) -> Self {
         let (pcm_tx, pcm_rx) = mpsc::channel(1024);
         let shared_queue = match (
-            std::env::var("GEZELLIG_SHARED_QUEUE_GIST").ok(),
+            std::env::var("GEZELLIG_SHARED_QUEUE_REPO").ok(),
             std::env::var("GEZELLIG_SHARED_QUEUE_FILE").ok(),
             shared_state_path,
         ) {
-            (Some(gist_id), Some(filename), Some(state_path)) => Some(SharedQueueConfig {
-                gist_id,
-                filename,
+            (Some(repo), Some(path), Some(state_path)) => Some(SharedQueueConfig {
+                repo,
+                path,
                 state_path,
             }),
             _ => None,
@@ -719,7 +726,7 @@ async fn run_playback_loop(
 }
 
 fn fetch_shared_queue(cfg: &SharedQueueConfig) -> Result<(Vec<QueuedTrack>, u64), String> {
-    let content = read_gist_file(cfg)?;
+    let (content, _) = read_repo_file(cfg)?;
     let mut max_id = 0;
     let mut queued: Vec<(u64, String)> = Vec::new();
     let mut played: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -771,18 +778,31 @@ fn fetch_shared_queue(cfg: &SharedQueueConfig) -> Result<(Vec<QueuedTrack>, u64)
     Ok((items, max_id))
 }
 
-fn read_gist_file(cfg: &SharedQueueConfig) -> Result<String, String> {
-    let output = Command::new("gh")
-        .args(["gist", "view", &cfg.gist_id, "-f", &cfg.filename])
+fn read_repo_file(cfg: &SharedQueueConfig) -> Result<(String, Option<String>), String> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "api",
+            &format!("repos/{}/contents/{}", cfg.repo, cfg.path),
+        ])
         .output()
-        .map_err(|e| format!("Failed to run gh gist view: {e}"))?;
+        .map_err(|e| format!("Failed to run gh api: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
-    String::from_utf8(output.stdout).map_err(|e| format!("Invalid gist content: {e}"))
+    let response: RepoFileResponse = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse repo content: {e}"))?;
+    if response.encoding != "base64" {
+        return Err("Unexpected repo content encoding".to_string());
+    }
+    let raw = response.content.replace('\n', "");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw.as_bytes())
+        .map_err(|e| format!("Failed to decode repo content: {e}"))?;
+    let content = String::from_utf8(bytes).map_err(|e| format!("Invalid repo content: {e}"))?;
+    Ok((content, Some(response.sha)))
 }
 
-fn write_gist_file(cfg: &SharedQueueConfig, content: &str) -> Result<(), String> {
+fn write_repo_file(cfg: &SharedQueueConfig, content: &str, sha: Option<String>) -> Result<(), String> {
     let mut tmp_path = std::env::temp_dir();
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -791,16 +811,24 @@ fn write_gist_file(cfg: &SharedQueueConfig, content: &str) -> Result<(), String>
     tmp_path.push(format!("gezellig-queue-{suffix}.ndjson"));
     std::fs::write(&tmp_path, content).map_err(|e| format!("Failed to write temp file: {e}"))?;
 
-    let arg = format!("files[{}][content]=@{}", cfg.filename, tmp_path.display());
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "PATCH",
-            &format!("/gists/{}", cfg.gist_id),
-            "-f",
-            &arg,
-        ])
+    let encoded = base64::engine::general_purpose::STANDARD
+        .encode(content.as_bytes());
+    let mut args = vec![
+        "api".to_string(),
+        "-X".to_string(),
+        "PUT".to_string(),
+        format!("repos/{}/contents/{}", cfg.repo, cfg.path),
+        "-f".to_string(),
+        "message=Update shared queue".to_string(),
+        "-f".to_string(),
+        format!("content={encoded}"),
+    ];
+    if let Some(sha) = sha {
+        args.push("-f".to_string());
+        args.push(format!("sha={sha}"));
+    }
+    let output = std::process::Command::new("gh")
+        .args(args)
         .output()
         .map_err(|e| format!("Failed to run gh api: {e}"))?;
 
@@ -821,7 +849,7 @@ fn write_shared_state(cfg: &SharedQueueConfig, state: SharedQueueState) -> Resul
 }
 
 fn append_queue_event(cfg: &SharedQueueConfig, url: &str) -> Result<u64, String> {
-    let content = read_gist_file(cfg)?;
+    let (content, sha) = read_repo_file(cfg).unwrap_or((String::new(), None));
     let mut max_id = 0;
     for line in content.lines() {
         if let Ok(event) = serde_json::from_str::<QueueEvent>(line) {
@@ -840,7 +868,7 @@ fn append_queue_event(cfg: &SharedQueueConfig, url: &str) -> Result<u64, String>
     }
     new_content.push_str(&event.to_string());
     new_content.push('\n');
-    write_gist_file(cfg, &new_content)?;
+    write_repo_file(cfg, &new_content, sha)?;
     write_shared_state(cfg, SharedQueueState { last_seen_id: next_id })?;
     Ok(next_id)
 }
@@ -854,7 +882,7 @@ fn append_failed_event(cfg: &SharedQueueConfig, queued_id: u64) -> Result<u64, S
 }
 
 fn append_event_with_ref(cfg: &SharedQueueConfig, event_type: &str, queued_id: u64) -> Result<u64, String> {
-    let content = read_gist_file(cfg)?;
+    let (content, sha) = read_repo_file(cfg).unwrap_or((String::new(), None));
     let mut max_id = 0;
     for line in content.lines() {
         if let Ok(event) = serde_json::from_str::<QueueEvent>(line) {
@@ -873,7 +901,7 @@ fn append_event_with_ref(cfg: &SharedQueueConfig, event_type: &str, queued_id: u
     }
     new_content.push_str(&event.to_string());
     new_content.push('\n');
-    write_gist_file(cfg, &new_content)?;
+    write_repo_file(cfg, &new_content, sha)?;
     write_shared_state(cfg, SharedQueueState { last_seen_id: next_id })?;
     Ok(next_id)
 }

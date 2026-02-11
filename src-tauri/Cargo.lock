@@ -1985,6 +1985,7 @@ version = "0.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "cpal 0.15.3",
  "futures-util",
  "livekit",

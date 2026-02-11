@@ -33,6 +33,7 @@ rodio = "0.21.1"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 cpal = "0.15.3"
+base64 = "0.22.1"
 
 [dev-dependencies]
 tempfile = "3"
