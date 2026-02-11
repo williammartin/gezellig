@@ -19,6 +19,7 @@
   let showDebug = $state(false);
   let debugLogs: string[] = $state([]);
   let lastStatusLog = "";
+  let participantPollInterval: ReturnType<typeof setInterval> | null = $state(null);
 
   function debugLog(msg: string) {
     const ts = new Date().toLocaleTimeString();
@@ -79,10 +80,34 @@
       debugLog(`Token length: ${livekitToken.length}, starts with: ${livekitToken.substring(0, 20)}...`);
       await invoke("livekit_connect", { url: livekitUrl, token: livekitToken });
       livekitConnected = true;
+      inRoom = true;
       addNotification('Connected to LiveKit');
       debugLog('LiveKit connected successfully');
+      startParticipantPolling();
     } catch (e) {
       debugLog(`LiveKit connection failed: ${e}`);
+    }
+  }
+
+  function startParticipantPolling() {
+    if (participantPollInterval) return;
+    pollParticipants();
+    participantPollInterval = setInterval(pollParticipants, 2000);
+  }
+
+  function stopParticipantPolling() {
+    if (participantPollInterval) {
+      clearInterval(participantPollInterval);
+      participantPollInterval = null;
+    }
+  }
+
+  async function pollParticipants() {
+    try {
+      const participants: { identity: string; name: string }[] = await invoke("livekit_participants");
+      roomParticipants = participants.map(p => p.name || p.identity);
+    } catch {
+      // Not connected
     }
   }
 
@@ -96,6 +121,7 @@
   }
 
   async function resetConfig() {
+    stopParticipantPolling();
     try {
       await invoke("livekit_disconnect");
     } catch {
@@ -124,23 +150,26 @@
 
   async function joinRoom() {
     try {
-      roomParticipants = await invoke("join_room");
-    } catch {
+      await invoke("join_room");
+    } catch { /* ok */ }
+    inRoom = true;
+    // If not polling LiveKit participants, show self
+    if (!participantPollInterval) {
       roomParticipants = [displayName];
     }
-    inRoom = true;
     addNotification('You joined the room');
   }
 
   async function leaveRoom() {
     try {
-      roomParticipants = await invoke("leave_room");
-    } catch {
-      roomParticipants = [];
-    }
+      await invoke("leave_room");
+    } catch { /* ok */ }
     inRoom = false;
     isMuted = false;
     isDJ = false;
+    if (!participantPollInterval) {
+      roomParticipants = [];
+    }
     addNotification('You left the room');
   }
 
@@ -326,17 +355,6 @@
           <button data-testid="settings-reset" class="danger" onclick={resetConfig}>Reset & Sign Out</button>
         </div>
       {:else}
-        <section data-testid="online-users" class="card">
-          <h2>Online</h2>
-          <ul class="user-list">
-            <li>
-              <span class="user-bar" style="background: #e8a87c;"></span>
-              <span class="user-avatar">👤</span>
-              <span class="user-name">{displayName}</span>
-            </li>
-          </ul>
-        </section>
-
         <section data-testid="room" class="card">
           <h2>Room</h2>
           {#if roomParticipants.length > 0}

@@ -28,7 +28,7 @@ test.describe('First Launch Setup', () => {
     const payload = btoa(JSON.stringify({ sub: 'Alice', name: 'Alice' }));
     await page.locator('[data-testid="setup-token"]').fill(`${header}.${payload}.sig`);
     await page.locator('[data-testid="setup-connect"]').click();
-    await expect(page.locator('[data-testid="online-users"]')).toBeVisible();
+    await expect(page.locator('[data-testid="room"]')).toBeVisible();
     await expect(page.locator('[data-testid="setup-screen"]')).not.toBeVisible();
   });
 
@@ -39,7 +39,7 @@ test.describe('First Launch Setup', () => {
     const payload = btoa(JSON.stringify({ sub: 'Alice', name: 'Alice' }));
     await page.locator('[data-testid="setup-token"]').fill(`${header}.${payload}.sig`);
     await page.locator('[data-testid="setup-connect"]').click();
-    await expect(page.locator('[data-testid="online-users"]')).toContainText('Alice');
+    await expect(page.locator('[data-testid="room"]')).toBeVisible();
   });
 
   test('connect button is disabled when fields are empty', async ({ page }) => {

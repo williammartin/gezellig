@@ -29,9 +29,9 @@ test.describe('Settings', () => {
     await expect(urlInput).toBeVisible();
   });
 
-  test('display name from JWT is shown in online users list', async ({ page }) => {
+  test('display name from JWT is shown in sidebar', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('[data-testid="online-users"]')).toContainText('You');
+    await expect(page.locator('.sidebar-username')).toContainText('You');
   });
 
   test('display name from JWT is used when joining the room', async ({ page }) => {

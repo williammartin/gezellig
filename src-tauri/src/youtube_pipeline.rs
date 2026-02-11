@@ -575,12 +575,10 @@ async fn run_playback_loop(
                 .flat_map(|s| s.to_le_bytes())
                 .collect();
 
+            // Channel backpressure (capacity 1024) naturally paces sending
             if pcm_sender.send(bytes).await.is_err() {
-                // PCM channel closed — no LiveKit consumer
+                break;
             }
-
-            // Pace the sending to roughly real-time
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
         if skipped {
