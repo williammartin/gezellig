@@ -24,14 +24,17 @@ impl LiveKitRoom {
     pub fn new(url: String, token: String) -> Self {
         Self {
             room: Arc::new(TokioMutex::new(None)),
-            url: url.trim().to_string(),
-            token: token.trim().to_string(),
+            url: url.split_whitespace().collect::<Vec<_>>().join(""),
+            token: token.split_whitespace().collect::<Vec<_>>().join(""),
         }
     }
 
     /// Connect to the LiveKit room.
     pub async fn connect(&self) -> Result<(), String> {
-        crate::dlog!("[LK] Connecting to {} with token len={}", self.url, self.token.len());
+        crate::dlog!("[LK] Connecting to {} with token len={}, first20={}, last10={}", 
+            self.url, self.token.len(), 
+            &self.token[..self.token.len().min(20)],
+            &self.token[self.token.len().saturating_sub(10)..]);
         let room_options = RoomOptions::default();
         let (room, mut events) = Room::connect(&self.url, &self.token, room_options)
             .await
