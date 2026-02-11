@@ -36,42 +36,167 @@ pub trait AudioSource: Send + Sync {
 }
 
 /// YouTube audio source using rusty_ytdl crate.
+#[allow(dead_code)]
 pub struct RustyYtdlSource;
 
 #[async_trait::async_trait]
 impl AudioSource for RustyYtdlSource {
     async fn fetch_audio(&self, url: &str) -> Result<TrackInfo, String> {
-        let video_options = VideoOptions {
-            quality: VideoQuality::Lowest,
-            filter: VideoSearchOptions::Audio,
-            ..Default::default()
-        };
+        // Try audio-only first, then fall back to video+audio
+        let filters = [VideoSearchOptions::Audio, VideoSearchOptions::VideoAudio];
 
-        let video = Video::new_with_options(url, video_options)
-            .map_err(|e| format!("Failed to create video: {e}"))?;
+        for (i, filter) in filters.iter().enumerate() {
+            let video_options = VideoOptions {
+                quality: VideoQuality::Lowest,
+                filter: filter.clone(),
+                ..Default::default()
+            };
 
-        let info = video
-            .get_basic_info()
-            .await
-            .map_err(|e| format!("Failed to get video info: {e}"))?;
+            let video = Video::new_with_options(url, video_options)
+                .map_err(|e| format!("Failed to create video: {e}"))?;
 
-        let title = info.video_details.title.clone();
+            let info = video
+                .get_basic_info()
+                .await
+                .map_err(|e| format!("Failed to get video info: {e}"))?;
 
-        let stream = video
-            .stream()
-            .await
-            .map_err(|e| format!("Failed to get audio stream: {e}"))?;
+            let title = info.video_details.title.clone();
+            crate::dlog!("[DJ] Video info OK: '{}', trying filter {:?}", title, i);
 
-        let mut audio_data = Vec::new();
-        while let Some(chunk) = stream
-            .chunk()
-            .await
-            .map_err(|e| format!("Stream error: {e}"))?
-        {
-            audio_data.extend_from_slice(&chunk);
+            match video.stream().await {
+                Ok(stream) => {
+                    let mut audio_data = Vec::new();
+                    while let Some(chunk) = stream
+                        .chunk()
+                        .await
+                        .map_err(|e| format!("Stream error: {e}"))?
+                    {
+                        audio_data.extend_from_slice(&chunk);
+                    }
+
+                    crate::dlog!(
+                        "[DJ] Downloaded {} bytes of audio for '{}'",
+                        audio_data.len(),
+                        title
+                    );
+
+                    return Ok(TrackInfo { title, audio_data });
+                }
+                Err(e) => {
+                    crate::dlog!("[DJ] Filter {} failed: {e}, trying next...", i);
+                    if i == filters.len() - 1 {
+                        return Err(format!("Failed to get audio stream: {e}"));
+                    }
+                }
+            }
         }
 
-        log::info!("[DJ] Downloaded {} bytes of audio for '{}'", audio_data.len(), title);
+        Err("No audio stream found".into())
+    }
+}
+
+/// YouTube audio source using yt-dlp CLI tool.
+/// Falls back to this when rusty_ytdl fails (e.g. 403 errors).
+pub struct YtDlpSource {
+    cache_dir: Option<std::path::PathBuf>,
+}
+
+impl YtDlpSource {
+    pub fn new(cache_dir: Option<std::path::PathBuf>) -> Self {
+        if let Some(ref dir) = cache_dir {
+            let _ = std::fs::create_dir_all(dir);
+            crate::dlog!("[DJ] Audio cache dir: {}", dir.display());
+        }
+        Self { cache_dir }
+    }
+
+    /// Extract video ID from YouTube URL for cache key.
+    fn video_id(url: &str) -> Option<String> {
+        // Handle youtube.com/watch?v=ID and youtu.be/ID
+        if let Some(pos) = url.find("v=") {
+            let id = &url[pos + 2..];
+            Some(id.split(&['&', '#', '?'][..]).next().unwrap_or(id).to_string())
+        } else if url.contains("youtu.be/") {
+            url.split("youtu.be/").nth(1)
+                .map(|s| s.split(&['?', '&', '#'][..]).next().unwrap_or(s).to_string())
+        } else {
+            None
+        }
+    }
+
+    fn cache_path(&self, url: &str) -> Option<std::path::PathBuf> {
+        let dir = self.cache_dir.as_ref()?;
+        let id = Self::video_id(url)?;
+        Some(dir.join(format!("{id}.pcm")))
+    }
+
+    fn title_cache_path(&self, url: &str) -> Option<std::path::PathBuf> {
+        let dir = self.cache_dir.as_ref()?;
+        let id = Self::video_id(url)?;
+        Some(dir.join(format!("{id}.title")))
+    }
+}
+
+#[async_trait::async_trait]
+impl AudioSource for YtDlpSource {
+    async fn fetch_audio(&self, url: &str) -> Result<TrackInfo, String> {
+        use tokio::process::Command;
+
+        // Check cache first
+        if let (Some(pcm_path), Some(title_path)) = (self.cache_path(url), self.title_cache_path(url)) {
+            if pcm_path.exists() && title_path.exists() {
+                let title = std::fs::read_to_string(&title_path).unwrap_or_else(|_| "Cached".into());
+                let audio_data = std::fs::read(&pcm_path).map_err(|e| format!("Cache read error: {e}"))?;
+                crate::dlog!("[DJ] Cache hit: '{}' ({} bytes)", title.trim(), audio_data.len());
+                return Ok(TrackInfo { title: title.trim().to_string(), audio_data });
+            }
+        }
+
+        // Get title
+        let title_output = Command::new("yt-dlp")
+            .args(["--get-title", "--no-warnings", url])
+            .output()
+            .await
+            .map_err(|e| format!("yt-dlp not found: {e}"))?;
+
+        let title = if title_output.status.success() {
+            String::from_utf8_lossy(&title_output.stdout).trim().to_string()
+        } else {
+            "Unknown".to_string()
+        };
+
+        crate::dlog!("[DJ] yt-dlp title: '{}'", title);
+
+        // Download best audio and convert to raw PCM via ffmpeg
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                &format!(
+                    "yt-dlp -f bestaudio -o - --no-warnings --no-progress '{}' | ffmpeg -i pipe:0 -f s16le -acodec pcm_s16le -ar 48000 -ac 2 pipe:1 2>/dev/null",
+                    url.replace('\'', "'\\''")
+                ),
+            ])
+            .output()
+            .await
+            .map_err(|e| format!("yt-dlp|ffmpeg failed: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("yt-dlp|ffmpeg error: {stderr}"));
+        }
+
+        let audio_data = output.stdout;
+        crate::dlog!("[DJ] yt-dlp|ffmpeg produced {} bytes of PCM", audio_data.len());
+
+        // Write to cache
+        if let (Some(pcm_path), Some(title_path)) = (self.cache_path(url), self.title_cache_path(url)) {
+            if let Err(e) = std::fs::write(&pcm_path, &audio_data) {
+                crate::dlog!("[DJ] Cache write error: {e}");
+            } else {
+                let _ = std::fs::write(&title_path, &title);
+                crate::dlog!("[DJ] Cached {} bytes for '{}'", audio_data.len(), title);
+            }
+        }
 
         Ok(TrackInfo { title, audio_data })
     }
@@ -79,6 +204,8 @@ impl AudioSource for RustyYtdlSource {
 
 /// Decode raw audio bytes (webm/mp4/opus) to interleaved PCM i16 samples.
 /// Returns (samples, sample_rate, channels).
+/// Currently unused — yt-dlp|ffmpeg outputs PCM directly — kept for rusty_ytdl fallback.
+#[allow(dead_code)]
 pub fn decode_audio_to_pcm(
     data: Vec<u8>,
 ) -> Result<(Vec<i16>, u32, u16), String> {
@@ -150,7 +277,7 @@ pub fn decode_audio_to_pcm(
         }
     }
 
-    log::info!(
+    crate::dlog!(
         "[DJ] Decoded {} PCM samples ({}Hz, {} channels)",
         all_samples.len(),
         sample_rate,
@@ -177,10 +304,18 @@ pub struct YouTubePipeline {
     pcm_sender: mpsc::Sender<Vec<u8>>,
     pcm_receiver: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
     skip_tx: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
+    /// When true, skip local rodio playback (audio goes to LiveKit only).
+    local_playback_disabled: Arc<std::sync::atomic::AtomicBool>,
+    cache_dir: Option<std::path::PathBuf>,
 }
 
 impl YouTubePipeline {
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_cache_dir(None)
+    }
+
+    pub fn with_cache_dir(cache_dir: Option<std::path::PathBuf>) -> Self {
         let (pcm_tx, pcm_rx) = mpsc::channel(1024);
         Self {
             status: Arc::new(Mutex::new(DjStatus::Idle)),
@@ -190,13 +325,9 @@ impl YouTubePipeline {
             pcm_sender: pcm_tx,
             pcm_receiver: Mutex::new(Some(pcm_rx)),
             skip_tx: Mutex::new(None),
+            local_playback_disabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cache_dir,
         }
-    }
-
-    /// Take the PCM receiver (called once by LiveKit publisher).
-    #[allow(dead_code)]
-    pub fn take_pcm_receiver(&self) -> Option<mpsc::Receiver<Vec<u8>>> {
-        self.pcm_receiver.lock().ok()?.take()
     }
 }
 
@@ -215,13 +346,16 @@ impl AudioPipeline for YouTubePipeline {
 
         // Only spawn if inside a tokio runtime
         if tokio::runtime::Handle::try_current().is_ok() {
+            crate::dlog!("[DJ] Spawning playback loop");
             let queue = self.queue.clone();
             let status = self.status.clone();
             let active = self.active.clone();
             let pcm_sender = self.pcm_sender.clone();
+            let local_disabled = self.local_playback_disabled.clone();
+            let cache_dir = self.cache_dir.clone();
 
             tokio::spawn(async move {
-                run_playback_loop(queue, status, active, pcm_sender, skip_rx).await;
+                run_playback_loop(queue, status, active, pcm_sender, skip_rx, local_disabled, cache_dir).await;
             });
         }
 
@@ -286,6 +420,14 @@ impl AudioPipeline for YouTubePipeline {
         let queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.iter().map(|t| t.url.clone()).collect()
     }
+
+    fn take_pcm_receiver(&self) -> Option<mpsc::Receiver<Vec<u8>>> {
+        self.pcm_receiver.lock().ok()?.take()
+    }
+
+    fn set_local_playback(&self, enabled: bool) {
+        self.local_playback_disabled.store(!enabled, Ordering::Relaxed);
+    }
 }
 
 /// The main playback loop: pops tracks from the queue, fetches, decodes, streams PCM.
@@ -295,8 +437,11 @@ async fn run_playback_loop(
     active: Arc<Mutex<bool>>,
     pcm_sender: mpsc::Sender<Vec<u8>>,
     mut skip_rx: tokio::sync::watch::Receiver<bool>,
+    local_playback_disabled: Arc<std::sync::atomic::AtomicBool>,
+    cache_dir: Option<std::path::PathBuf>,
 ) {
-    let source = RustyYtdlSource;
+    let source = YtDlpSource::new(cache_dir);
+    crate::dlog!("[DJ] Playback loop started");
 
     loop {
         // Check if still active
@@ -315,7 +460,10 @@ async fn run_playback_loop(
         };
 
         let track = match track {
-            Some(t) => t,
+            Some(t) => {
+                crate::dlog!("[DJ] Popped track from queue: {}", t.url);
+                t
+            }
             None => {
                 // No tracks in queue — wait a bit and check again
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -323,7 +471,7 @@ async fn run_playback_loop(
             }
         };
 
-        log::info!("[DJ] Playing: {}", track.url);
+        crate::dlog!("[DJ] Playing: {}", track.url);
 
         // Update status to Loading
         if let Ok(mut s) = status.lock() {
@@ -331,10 +479,14 @@ async fn run_playback_loop(
         }
 
         // Fetch audio
+        crate::dlog!("[DJ] Fetching audio...");
         let track_info = match source.fetch_audio(&track.url).await {
-            Ok(info) => info,
+            Ok(info) => {
+                crate::dlog!("[DJ] Fetched: '{}' ({} bytes)", info.title, info.audio_data.len());
+                info
+            }
             Err(e) => {
-                log::error!("[DJ] Failed to fetch audio: {e}");
+                crate::dlog!("[DJ] Failed to fetch audio: {e}");
                 continue;
             }
         };
@@ -347,29 +499,73 @@ async fn run_playback_loop(
             });
         }
 
-        // Decode to PCM
-        let (samples, _sample_rate, _channels) = match decode_audio_to_pcm(track_info.audio_data) {
-            Ok(result) => result,
-            Err(e) => {
-                log::error!("[DJ] Failed to decode audio: {e}");
-                continue;
-            }
+        // Audio data is already raw PCM s16le at 48kHz stereo from yt-dlp|ffmpeg
+        // Convert bytes to i16 samples
+        let samples: Vec<i16> = track_info
+            .audio_data
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+
+        crate::dlog!("[DJ] PCM: {} samples ({:.1}s at 48kHz stereo)", samples.len(), samples.len() as f64 / 48000.0 / 2.0);
+
+        // Optionally play audio through local speakers using rodio
+        let use_local = !local_playback_disabled.load(Ordering::Relaxed);
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let playback_handle = if use_local {
+            let samples_clone = samples.clone();
+            Some(std::thread::spawn(move || {
+                use rodio::{Sink, buffer::SamplesBuffer, stream::OutputStreamBuilder};
+                let stream = match OutputStreamBuilder::open_default_stream() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        crate::dlog!("[DJ] Failed to open audio output: {e}");
+                        return;
+                    }
+                };
+                let sink = Sink::connect_new(stream.mixer());
+
+                let chunk_size = 48000 * 2; // 1 second of stereo audio
+                for chunk in samples_clone.chunks(chunk_size) {
+                    if stop_rx.try_recv().is_ok() {
+                        sink.stop();
+                        return;
+                    }
+                    let f32_samples: Vec<f32> = chunk.iter().map(|&s| s as f32 / 32768.0).collect();
+                    let source = SamplesBuffer::new(2, 48000, f32_samples);
+                    sink.append(source);
+                }
+
+                loop {
+                    if stop_rx.try_recv().is_ok() {
+                        sink.stop();
+                        return;
+                    }
+                    if sink.empty() {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }))
+        } else {
+            crate::dlog!("[DJ] Local playback disabled, audio goes to LiveKit only");
+            None
         };
 
-        // Stream PCM samples through the channel in chunks
-        // Send as i16 bytes, ~10ms worth at a time
-        let chunk_samples = 882; // 441 samples/channel * 2 channels = ~10ms at 44.1kHz
+        // Stream PCM through channel for LiveKit publishing
+        let chunk_samples = 960; // 480 samples/channel * 2 channels = 10ms at 48kHz
         let mut skipped = false;
 
         for chunk in samples.chunks(chunk_samples) {
-            // Check for skip signal
             if skip_rx.has_changed().unwrap_or(false) {
                 let _ = skip_rx.changed().await;
+                let _ = stop_tx.send(());
                 skipped = true;
                 break;
             }
 
             if !*active.lock().unwrap_or_else(|e| e.into_inner()) {
+                let _ = stop_tx.send(());
                 skipped = true;
                 break;
             }
@@ -380,8 +576,7 @@ async fn run_playback_loop(
                 .collect();
 
             if pcm_sender.send(bytes).await.is_err() {
-                log::warn!("[DJ] PCM channel closed");
-                break;
+                // PCM channel closed — no LiveKit consumer
             }
 
             // Pace the sending to roughly real-time
@@ -389,9 +584,13 @@ async fn run_playback_loop(
         }
 
         if skipped {
-            log::info!("[DJ] Track skipped");
+            crate::dlog!("[DJ] Track skipped");
         } else {
-            log::info!("[DJ] Track finished: {}", track_info.title);
+            crate::dlog!("[DJ] Track finished: {}", track_info.title);
+        }
+
+        if let Some(handle) = playback_handle {
+            let _ = handle.join();
         }
     }
 
@@ -399,7 +598,7 @@ async fn run_playback_loop(
     if let Ok(mut s) = status.lock() {
         *s = DjStatus::Idle;
     }
-    log::info!("[DJ] Playback loop ended");
+    crate::dlog!("[DJ] Playback loop ended");
 }
 
 #[cfg(test)]

@@ -24,17 +24,23 @@ impl LiveKitRoom {
     pub fn new(url: String, token: String) -> Self {
         Self {
             room: Arc::new(TokioMutex::new(None)),
-            url,
-            token,
+            url: url.trim().to_string(),
+            token: token.trim().to_string(),
         }
     }
 
     /// Connect to the LiveKit room.
     pub async fn connect(&self) -> Result<(), String> {
+        crate::dlog!("[LK] Connecting to {} with token len={}", self.url, self.token.len());
         let room_options = RoomOptions::default();
         let (room, mut events) = Room::connect(&self.url, &self.token, room_options)
             .await
-            .map_err(|e| format!("Failed to connect to LiveKit: {e}"))?;
+            .map_err(|e| {
+                crate::dlog!("[LK] Connection failed: {e}");
+                format!("Failed to connect to LiveKit: {e}")
+            })?;
+
+        crate::dlog!("[LK] Connected successfully");
 
         let room = Arc::new(room);
         *self.room.lock().await = Some(room.clone());
@@ -111,6 +117,12 @@ impl LiveKitRoom {
     pub async fn is_connected(&self) -> bool {
         let room_guard = self.room.lock().await;
         room_guard.is_some()
+    }
+
+    /// Get the inner Arc<Room> if connected.
+    pub async fn get_room(&self) -> Option<Arc<Room>> {
+        let room_guard = self.room.lock().await;
+        room_guard.clone()
     }
 }
 

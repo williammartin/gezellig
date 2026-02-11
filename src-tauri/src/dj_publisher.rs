@@ -1,4 +1,4 @@
-//! DJ audio publisher: reads PCM from the librespot channel sink and
+//! DJ audio publisher: reads PCM from the YouTube pipeline and
 //! publishes it as a LiveKit audio track.
 
 use std::borrow::Cow;
@@ -11,10 +11,10 @@ use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use tokio::sync::mpsc;
 
-const SAMPLE_RATE: u32 = 44100;
+const SAMPLE_RATE: u32 = 48000;
 const NUM_CHANNELS: u32 = 2;
 // 10ms of audio per frame (LiveKit requires 10ms frames for unbuffered mode)
-const SAMPLES_PER_CHANNEL: u32 = SAMPLE_RATE / 100; // 441
+const SAMPLES_PER_CHANNEL: u32 = SAMPLE_RATE / 100; // 480
 
 /// Publishes PCM audio from a channel as a LiveKit audio track.
 /// Returns a JoinHandle that can be aborted to stop publishing.
@@ -48,11 +48,11 @@ pub fn spawn_audio_publisher(
             .await;
 
         if let Err(e) = publish_result {
-            log::error!("Failed to publish music track: {e}");
+            crate::dlog!("Failed to publish music track: {e}");
             return;
         }
 
-        log::info!("Published music audio track to LiveKit room");
+        crate::dlog!("Published music audio track to LiveKit room");
 
         // Buffer to accumulate PCM samples into 10ms frames
         let frame_size_samples = (SAMPLES_PER_CHANNEL * NUM_CHANNELS) as usize;
@@ -62,7 +62,7 @@ pub fn spawn_audio_publisher(
         loop {
             tokio::select! {
                 _ = &mut shutdown_rx => {
-                    log::info!("Stopping audio publisher");
+                    crate::dlog!("Stopping audio publisher");
                     break;
                 }
                 data = pcm_rx.recv() => {
@@ -88,12 +88,12 @@ pub fn spawn_audio_publisher(
                                 };
 
                                 if let Err(e) = source.capture_frame(&frame).await {
-                                    log::warn!("Failed to capture audio frame: {e}");
+                                    crate::dlog!("Failed to capture audio frame: {e}");
                                 }
                             }
                         }
                         None => {
-                            log::info!("PCM channel closed, stopping publisher");
+                            crate::dlog!("PCM channel closed, stopping publisher");
                             break;
                         }
                     }
@@ -103,7 +103,7 @@ pub fn spawn_audio_publisher(
 
         // Unpublish track
         // The track is automatically unpublished when dropped
-        log::info!("Audio publisher stopped");
+        crate::dlog!("Audio publisher stopped");
     })
 }
 
@@ -113,9 +113,9 @@ mod tests {
 
     #[test]
     fn constants_are_correct() {
-        // 44100 Hz / 100 = 441 samples per 10ms frame
-        assert_eq!(SAMPLES_PER_CHANNEL, 441);
-        // Stereo: 441 * 2 = 882 samples per frame
-        assert_eq!(SAMPLES_PER_CHANNEL * NUM_CHANNELS, 882);
+        // 48000 Hz / 100 = 480 samples per 10ms frame
+        assert_eq!(SAMPLES_PER_CHANNEL, 480);
+        // Stereo: 480 * 2 = 960 samples per frame
+        assert_eq!(SAMPLES_PER_CHANNEL * NUM_CHANNELS, 960);
     }
 }

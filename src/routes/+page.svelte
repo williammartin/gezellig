@@ -16,6 +16,14 @@
   let djStatusPollInterval: ReturnType<typeof setInterval> | null = $state(null);
   let djQueueUrl = $state("");
   let djQueue: string[] = $state([]);
+  let showDebug = $state(false);
+  let debugLogs: string[] = $state([]);
+  let lastStatusLog = "";
+
+  function debugLog(msg: string) {
+    const ts = new Date().toLocaleTimeString();
+    debugLogs = [...debugLogs.slice(-99), `[${ts}] ${msg}`];
+  }
 
   function extractIdentityFromToken(token: string): string {
     try {
@@ -40,6 +48,7 @@
         livekitToken = data.livekitToken || "";
         if (livekitUrl && livekitToken) {
           setupComplete = true;
+          connectToLiveKit();
         }
       }
     } catch {
@@ -51,11 +60,14 @@
 
   async function connectToLiveKit() {
     try {
+      debugLog(`Connecting to LiveKit: ${livekitUrl}`);
+      debugLog(`Token length: ${livekitToken.length}, starts with: ${livekitToken.substring(0, 20)}...`);
       await invoke("livekit_connect", { url: livekitUrl, token: livekitToken });
       livekitConnected = true;
       addNotification('Connected to LiveKit');
-    } catch {
-      // Running outside Tauri or connection failed — continue in local mode
+      debugLog('LiveKit connected successfully');
+    } catch (e) {
+      debugLog(`LiveKit connection failed: ${e}`);
     }
   }
 
@@ -124,22 +136,26 @@
   async function becomeDJ() {
     isDJ = true;
     addNotification('You are now the DJ');
+    debugLog('becomeDJ: calling become_dj + start_dj_audio');
     try {
       await invoke("become_dj");
+      debugLog('becomeDJ: become_dj OK');
       await invoke("start_dj_audio");
-    } catch {
-      // Running outside Tauri
+      debugLog('becomeDJ: start_dj_audio OK');
+    } catch (e) {
+      debugLog(`becomeDJ error: ${e}`);
     }
     startDjStatusPolling();
   }
 
   async function stopDJ() {
+    debugLog('stopDJ called');
     stopDjStatusPolling();
     try {
       await invoke("stop_dj_audio");
       await invoke("stop_dj");
-    } catch {
-      // Running outside Tauri
+    } catch (e) {
+      debugLog(`stopDJ error: ${e}`);
     }
     isDJ = false;
     djStatus = { type: "Idle" };
@@ -151,20 +167,24 @@
     if (!djQueueUrl.trim()) return;
     const url = djQueueUrl.trim();
     djQueueUrl = "";
+    debugLog(`addToQueue: ${url}`);
     try {
       await invoke("queue_track", { url });
+      debugLog('queue_track OK');
       djQueue = await invoke<string[]>("get_queue");
-    } catch {
-      // Running outside Tauri
+      debugLog(`get_queue: ${djQueue.length} items`);
+    } catch (e) {
+      debugLog(`addToQueue error: ${e}`);
       djQueue = [...djQueue, url];
     }
   }
 
   async function skipTrack() {
+    debugLog('skipTrack called');
     try {
       await invoke("skip_track");
-    } catch {
-      // Running outside Tauri
+    } catch (e) {
+      debugLog(`skipTrack error: ${e}`);
     }
   }
 
@@ -173,6 +193,11 @@
     djStatusPollInterval = setInterval(async () => {
       try {
         const status = await invoke<any>("get_dj_status");
+        const statusStr = JSON.stringify(status);
+        if (statusStr !== lastStatusLog) {
+          debugLog(`dj_status: ${statusStr}`);
+          lastStatusLog = statusStr;
+        }
         if (typeof status === "string") {
           djStatus = { type: status };
         } else if (status && typeof status === "object") {
@@ -189,6 +214,14 @@
       }
       try {
         djQueue = await invoke<string[]>("get_queue");
+      } catch {
+        // Outside Tauri
+      }
+      try {
+        const backendLogs = await invoke<string[]>("get_backend_logs");
+        for (const log of backendLogs) {
+          debugLog(`[rust] ${log}`);
+        }
       } catch {
         // Outside Tauri
       }
@@ -265,7 +298,14 @@
             <textarea data-testid="settings-token" bind:value={livekitToken} rows="2"></textarea>
           </label>
           <div class="settings-actions">
-            <button data-testid="settings-save" onclick={() => showSettings = false}>Save</button>
+            <button data-testid="settings-save" onclick={async () => {
+              localStorage.setItem("gezellig-setup", JSON.stringify({ livekitUrl, livekitToken }));
+              try {
+                await invoke("save_settings", { livekitUrl });
+              } catch { /* outside Tauri */ }
+              addNotification('Settings saved');
+              showSettings = false;
+            }}>Save</button>
             <button data-testid="settings-close" onclick={() => showSettings = false}>Close</button>
           </div>
           <button data-testid="settings-reset" class="danger" onclick={resetConfig}>Reset & Sign Out</button>
@@ -351,6 +391,21 @@
       {/if}
     </main>
   </div>
+{/if}
+
+<!-- Debug Panel -->
+<div data-testid="debug-panel-toggle" style="position: fixed; bottom: 8px; right: 8px; z-index: 1000;">
+  <button onclick={() => showDebug = !showDebug} style="background: #333; color: #0f0; border: none; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer;">🐛</button>
+</div>
+{#if showDebug}
+<div data-testid="debug-panel" style="position: fixed; bottom: 36px; right: 8px; width: 420px; max-height: 250px; background: #1a1a1a; color: #0f0; font-family: monospace; font-size: 11px; border-radius: 6px; overflow-y: auto; padding: 8px; z-index: 1000; border: 1px solid #333;">
+  {#each debugLogs as log}
+    <div style="white-space: pre-wrap; margin-bottom: 2px;">{log}</div>
+  {/each}
+  {#if debugLogs.length === 0}
+    <div style="color: #666;">No debug logs yet</div>
+  {/if}
+</div>
 {/if}
 
 <style>

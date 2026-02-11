@@ -44,6 +44,12 @@ pub trait AudioPipeline: Send + Sync {
 
     /// Get the current queue (list of URLs/titles).
     fn get_queue(&self) -> Vec<String>;
+
+    /// Take the PCM receiver for LiveKit publishing (can only be called once).
+    fn take_pcm_receiver(&self) -> Option<tokio::sync::mpsc::Receiver<Vec<u8>>>;
+
+    /// Disable/enable local speaker playback.
+    fn set_local_playback(&self, _enabled: bool) {}
 }
 
 /// Stub implementation for development/testing without real Spotify or LiveKit.
@@ -97,6 +103,10 @@ impl AudioPipeline for StubAudioPipeline {
 
     fn get_queue(&self) -> Vec<String> {
         vec![]
+    }
+
+    fn take_pcm_receiver(&self) -> Option<tokio::sync::mpsc::Receiver<Vec<u8>>> {
+        None
     }
 }
 
