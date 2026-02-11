@@ -175,6 +175,7 @@
     addNotification('You are now the DJ');
     debugLog('becomeDJ: calling become_dj + start_dj_audio');
     try {
+      await invoke("join_room");
       await invoke("become_dj");
       debugLog('becomeDJ: become_dj OK');
       await invoke("start_dj_audio");

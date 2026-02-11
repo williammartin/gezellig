@@ -348,8 +348,9 @@ impl AudioPipeline for YouTubePipeline {
 
         // Only spawn if inside a tokio runtime and no loop is already running
         if tokio::runtime::Handle::try_current().is_ok()
-            && !self.loop_running.swap(true, Ordering::SeqCst)
+            && !self.loop_running.load(Ordering::SeqCst)
         {
+            self.loop_running.store(true, Ordering::SeqCst);
             crate::dlog!("[DJ] Spawning playback loop");
             let queue = self.queue.clone();
             let status = self.status.clone();
@@ -357,11 +358,9 @@ impl AudioPipeline for YouTubePipeline {
             let pcm_sender = self.pcm_sender.clone();
             let local_disabled = self.local_playback_disabled.clone();
             let cache_dir = self.cache_dir.clone();
-            let loop_running = self.loop_running.clone();
 
             tokio::spawn(async move {
                 run_playback_loop(queue, status, active, pcm_sender, skip_rx, local_disabled, cache_dir).await;
-                loop_running.store(false, Ordering::SeqCst);
                 crate::dlog!("[DJ] Playback loop ended");
             });
         } else {
@@ -584,17 +583,14 @@ async fn run_playback_loop(
                 .flat_map(|s| s.to_le_bytes())
                 .collect();
 
-            // try_send: drop chunk if channel full or no consumer (non-blocking)
-            match pcm_sender.try_send(bytes) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Closed(_)) => break,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    // Channel full — consumer can't keep up, drop this chunk
-                }
+            if pcm_sender.is_closed() {
+                break;
             }
 
-            // Pace at real-time so we don't spin-loop when no consumer
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            // Backpressure instead of dropping frames to avoid audio gaps/stutter.
+            if pcm_sender.send(bytes).await.is_err() {
+                break;
+            }
         }
 
         if skipped {
