@@ -9,12 +9,14 @@ use audio::{AudioPipeline, DjStatus};
 use livekit_room::LiveKitRoom;
 use room::RoomState;
 use settings::Settings;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU8, Ordering};
 use tauri::{Manager, State};
 use tracing_subscriber::EnvFilter;
 use tokio::sync::Mutex as TokioMutex;
 
 struct SettingsPath(std::path::PathBuf);
+struct PlaybackVolume(Arc<AtomicU8>);
 
 /// Holds the DJ publisher shutdown handle.
 struct DjPublisherHandle {
@@ -210,15 +212,21 @@ fn get_dj_status(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<DjStatu
 }
 
 #[tauri::command]
-fn set_music_volume(pipeline: State<'_, Mutex<DynAudioPipeline>>, volume: u8) -> Result<(), String> {
+fn set_music_volume(
+    pipeline: State<'_, Mutex<DynAudioPipeline>>,
+    playback_volume: State<'_, PlaybackVolume>,
+    volume: u8,
+) -> Result<(), String> {
     let p = pipeline.lock().map_err(|e| e.to_string())?;
-    p.set_volume(volume)
+    p.set_volume(volume)?;
+    let clamped = p.volume();
+    playback_volume.0.store(clamped, Ordering::Relaxed);
+    Ok(())
 }
 
 #[tauri::command]
-fn get_music_volume(pipeline: State<'_, Mutex<DynAudioPipeline>>) -> Result<u8, String> {
-    let p = pipeline.lock().map_err(|e| e.to_string())?;
-    Ok(p.volume())
+fn get_music_volume(playback_volume: State<'_, PlaybackVolume>) -> Result<u8, String> {
+    Ok(playback_volume.0.load(Ordering::Relaxed))
 }
 
 #[tauri::command]
@@ -263,10 +271,11 @@ fn get_env_config() -> std::collections::HashMap<String, String> {
 #[tauri::command]
 async fn livekit_connect(
     lk_room: State<'_, TokioMutex<Option<LiveKitRoom>>>,
+    playback_volume: State<'_, PlaybackVolume>,
     url: String,
     token: String,
 ) -> Result<Vec<livekit_room::Participant>, String> {
-    let room = LiveKitRoom::new(url, token);
+    let room = LiveKitRoom::new(url, token, playback_volume.0.clone());
     room.connect().await?;
     let participants = room.participants().await;
     *lk_room.lock().await = Some(room);
@@ -316,11 +325,13 @@ pub fn run() {
 
     let _ = DEBUG_LOG.set(DebugLogBuffer::new());
 
+    let playback_volume = Arc::new(AtomicU8::new(50));
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(RoomState::new()))
         .manage(TokioMutex::new(None::<LiveKitRoom>))
         .manage(TokioMutex::new(None::<DjPublisherHandle>))
+        .manage(PlaybackVolume(playback_volume))
         .setup(|app| {
             let app_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
             app.manage(SettingsPath(app_dir.join("settings.json")));

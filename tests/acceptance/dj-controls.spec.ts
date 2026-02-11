@@ -66,6 +66,5 @@ test.describe('DJ Controls', () => {
     await page.locator('[data-testid="stop-dj-button"]').click();
     await expect(page.locator('[data-testid="dj-status"]')).not.toBeVisible();
     await expect(page.locator('[data-testid="now-playing"]')).not.toBeVisible();
-    await expect(page.locator('[data-testid="music-volume"]')).not.toBeVisible();
   });
 });

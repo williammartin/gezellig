@@ -358,9 +358,10 @@ impl AudioPipeline for YouTubePipeline {
             let pcm_sender = self.pcm_sender.clone();
             let local_disabled = self.local_playback_disabled.clone();
             let cache_dir = self.cache_dir.clone();
+            let volume = self.volume.clone();
 
             tokio::spawn(async move {
-                run_playback_loop(queue, status, active, pcm_sender, skip_rx, local_disabled, cache_dir).await;
+                run_playback_loop(queue, status, active, pcm_sender, skip_rx, local_disabled, cache_dir, volume).await;
                 crate::dlog!("[DJ] Playback loop ended");
             });
         } else {
@@ -447,6 +448,7 @@ async fn run_playback_loop(
     mut skip_rx: tokio::sync::watch::Receiver<bool>,
     local_playback_disabled: Arc<std::sync::atomic::AtomicBool>,
     cache_dir: Option<std::path::PathBuf>,
+    volume: Arc<AtomicU8>,
 ) {
     let source = YtDlpSource::new(cache_dir);
     crate::dlog!("[DJ] Playback loop started");
@@ -522,6 +524,7 @@ async fn run_playback_loop(
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let playback_handle = if use_local {
             let samples_clone = samples.clone();
+            let volume = volume.clone();
             Some(std::thread::spawn(move || {
                 use rodio::{Sink, buffer::SamplesBuffer, stream::OutputStreamBuilder};
                 let stream = match OutputStreamBuilder::open_default_stream() {
@@ -539,6 +542,8 @@ async fn run_playback_loop(
                         sink.stop();
                         return;
                     }
+                    let volume = volume.load(Ordering::Relaxed) as f32 / 100.0;
+                    sink.set_volume(volume);
                     let f32_samples: Vec<f32> = chunk.iter().map(|&s| s as f32 / 32768.0).collect();
                     let source = SamplesBuffer::new(2, 48000, f32_samples);
                     sink.append(source);
@@ -578,9 +583,15 @@ async fn run_playback_loop(
                 break;
             }
 
+            let volume = volume.load(Ordering::Relaxed) as f32 / 100.0;
             let bytes: Vec<u8> = chunk
                 .iter()
-                .flat_map(|s| s.to_le_bytes())
+                .map(|s| {
+                    let scaled = (*s as f32 * volume)
+                        .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    scaled.to_le_bytes()
+                })
+                .flatten()
                 .collect();
 
             if pcm_sender.is_closed() {

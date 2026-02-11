@@ -6,6 +6,7 @@
 use livekit::prelude::*;
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use tokio::sync::Mutex as TokioMutex;
 use futures_util::StreamExt;
 
@@ -20,14 +21,16 @@ pub struct LiveKitRoom {
     room: Arc<TokioMutex<Option<Arc<Room>>>>,
     url: String,
     token: String,
+    playback_volume: Arc<AtomicU8>,
 }
 
 impl LiveKitRoom {
-    pub fn new(url: String, token: String) -> Self {
+    pub fn new(url: String, token: String, playback_volume: Arc<AtomicU8>) -> Self {
         Self {
             room: Arc::new(TokioMutex::new(None)),
             url: url.split_whitespace().collect::<Vec<_>>().join(""),
             token: token.split_whitespace().collect::<Vec<_>>().join(""),
+            playback_volume,
         }
     }
 
@@ -52,6 +55,7 @@ impl LiveKitRoom {
 
         // Spawn event handler
         let room_clone = room.clone();
+        let playback_volume = self.playback_volume.clone();
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
                 match event {
@@ -67,7 +71,7 @@ impl LiveKitRoom {
                         crate::dlog!("[LK] Track subscribed from {}: sid={}, kind={:?}",
                             participant.identity(), track.sid(), track.kind());
                         if let RemoteTrack::Audio(audio_track) = track {
-                            Self::spawn_audio_playback(audio_track);
+                            Self::spawn_audio_playback(audio_track, playback_volume.clone());
                         }
                     }
                     RoomEvent::Disconnected { reason } => {
@@ -132,7 +136,7 @@ impl LiveKitRoom {
     }
 
     /// Spawn a task that receives audio frames from a remote track and plays them locally.
-    fn spawn_audio_playback(track: RemoteAudioTrack) {
+    fn spawn_audio_playback(track: RemoteAudioTrack, playback_volume: Arc<AtomicU8>) {
         tokio::spawn(async move {
             let rtc_track = track.rtc_track();
             let mut audio_stream = NativeAudioStream::new(rtc_track, 48000, 2);
@@ -154,6 +158,8 @@ impl LiveKitRoom {
                 crate::dlog!("[LK] Rodio sink ready for subscribed audio");
 
                 while let Ok((samples, sample_rate, channels)) = pcm_rx.recv() {
+                    let volume = playback_volume.load(Ordering::Relaxed) as f32 / 100.0;
+                    sink.set_volume(volume);
                     let source = SamplesBuffer::new(channels as u16, sample_rate, samples);
                     sink.append(source);
                 }
@@ -195,9 +201,11 @@ mod tests {
             Err(err) => panic!("failed to create runtime: {err}"),
         };
         rt.block_on(async {
+            let playback_volume = Arc::new(AtomicU8::new(50));
             let room = LiveKitRoom::new(
                 "wss://test.livekit.cloud".to_string(),
                 "test-token".to_string(),
+                playback_volume,
             );
             assert!(!room.is_connected().await);
             assert!(room.participants().await.is_empty());

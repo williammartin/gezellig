@@ -2,7 +2,6 @@
   import { invoke } from "@tauri-apps/api/core";
 
   let inRoom = $state(true);
-  let isMuted = $state(false);
   let isDJ = $state(false);
   let roomParticipants: string[] = $state([]);
   let musicVolume = $state(50);
@@ -39,6 +38,25 @@
 
   let displayName = $derived(extractIdentityFromToken(livekitToken));
 
+  async function loadMusicVolume() {
+    try {
+      const volume = await invoke<number>("get_music_volume");
+      if (typeof volume === "number") {
+        musicVolume = volume;
+      }
+    } catch {
+      // Outside Tauri
+    }
+  }
+
+  async function updateMusicVolume() {
+    try {
+      await invoke("set_music_volume", { volume: Math.round(Number(musicVolume)) });
+    } catch {
+      // Outside Tauri
+    }
+  }
+
   // Check for saved setup on mount
   async function checkSavedSetup() {
     // Env vars take priority over localStorage
@@ -73,6 +91,7 @@
   }
 
   checkSavedSetup();
+  loadMusicVolume();
 
   async function connectToLiveKit() {
     try {
@@ -134,9 +153,9 @@
     livekitUrl = "wss://gezellig-tmbd1vyo.livekit.cloud";
     livekitToken = "";
     inRoom = false;
-    isMuted = false;
     isDJ = false;
     roomParticipants = [];
+    musicVolume = 50;
   }
 
   let canConnect = $derived(livekitUrl.length > 0 && livekitToken.length > 0);
@@ -161,14 +180,10 @@
       await invoke("leave_room");
     } catch { /* ok */ }
     inRoom = false;
-    isMuted = false;
     isDJ = false;
     addNotification('You left the room');
   }
 
-  function toggleMute() {
-    isMuted = !isMuted;
-  }
 
   async function becomeDJ() {
     isDJ = true;
@@ -367,12 +382,12 @@
         </section>
 
         <div class="actions">
-            <div class="controls">
-              <button data-testid="mute-button" class="btn" onclick={toggleMute}>
-                {isMuted ? '🔇 Unmute' : '🎤 Mute'}
-              </button>
+            <div class="card volume-card">
+              <label class="volume-control">
+                Music Volume
+                <input data-testid="music-volume" type="range" min="0" max="100" bind:value={musicVolume} oninput={updateMusicVolume} />
+              </label>
             </div>
-
             {#if isDJ}
               <div data-testid="dj-status" class="card dj-section">
                 <p class="dj-label">🎵 You are the DJ</p>
@@ -399,10 +414,6 @@
                 {/if}
                 <div class="dj-controls">
                   <button data-testid="skip-track-button" class="btn btn-outline" onclick={skipTrack}>⏭ Skip</button>
-                  <label class="volume-control">
-                    Music Volume
-                    <input data-testid="music-volume" type="range" min="0" max="100" bind:value={musicVolume} />
-                  </label>
                   <button data-testid="stop-dj-button" class="btn btn-outline" onclick={stopDJ}>Stop DJ</button>
                 </div>
               </div>
@@ -437,6 +448,12 @@
   line-height: 1.6;
   color: #1a1a1a;
   background-color: #f0edea;
+}
+
+:global(html), :global(body) {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
 }
 
 /* ---- App layout ---- */
@@ -627,12 +644,6 @@ h2 {
   margin-top: 0.5rem;
 }
 
-.controls {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-}
-
 .btn {
   border-radius: 8px;
   border: 1px solid #e5e2df;
@@ -649,17 +660,6 @@ h2 {
 .btn:hover {
   border-color: #ccc;
   background: #f7f5f3;
-}
-
-.btn-primary {
-  background: #1a1a1a;
-  color: #fff;
-  border-color: #1a1a1a;
-}
-
-.btn-primary:hover {
-  background: #333;
-  border-color: #333;
 }
 
 .btn-outline {
@@ -748,12 +748,6 @@ h2 {
   align-items: center;
   margin-top: 0.5rem;
   flex-wrap: wrap;
-}
-
-.dj-controls .volume-control {
-  flex: 1;
-  min-width: 120px;
-  margin: 0;
 }
 
 /* ---- Settings panel ---- */
@@ -972,15 +966,6 @@ button.danger:hover {
   button:hover, .btn:hover {
     background: #353331;
     border-color: #4a4846;
-  }
-  .btn-primary {
-    background: #e8e4e0;
-    color: #1a1a1a;
-    border-color: #e8e4e0;
-  }
-  .btn-primary:hover {
-    background: #d5d1cc;
-    border-color: #d5d1cc;
   }
   button.danger {
     color: #e57373;

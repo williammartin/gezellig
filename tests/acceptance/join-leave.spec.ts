@@ -8,9 +8,9 @@ test.describe('Room', () => {
     await expect(roomSection).toContainText('Room');
   });
 
-  test('shows mute button on launch', async ({ page }) => {
+  test('shows music volume control on launch', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('[data-testid="mute-button"]')).toBeVisible();
+    await expect(page.locator('[data-testid="music-volume"]')).toBeVisible();
   });
 
   test('shows become DJ button on launch', async ({ page }) => {
