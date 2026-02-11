@@ -8,7 +8,12 @@ Set these environment variables before launching the app:
 
 - `GEZELLIG_SHARED_QUEUE_REPO` (owner/name, e.g. `williammartin/gezellig-queue`)
 - `GEZELLIG_SHARED_QUEUE_FILE` (path, e.g. `queue.ndjson`)
+- `GEZELLIG_GH_PATH` (optional path to gh binary, defaults to `gh`)
 - `GEZELLIG_DJ_BOT=1` to run the bot instance that reads the queue and publishes audio
+- `GH_HOST` (optional GitHub host for webhooks, defaults to `github.com`)
+
+The app also listens for GitHub webhook events over a websocket to refresh the queue quickly,
+falling back to polling if the webhook connection fails.
 
 The queue file is NDJSON with append-only events:
 

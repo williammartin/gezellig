@@ -1,5 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
+  import { onMount } from "svelte";
 
   let inRoom = $state(true);
   let roomParticipants: string[] = $state([]);
@@ -14,16 +16,35 @@
   let livekitConnected = $state(false);
   let notifications: string[] = $state([]);
   let djQueueUrl = $state("");
-  let djQueue: string[] = $state([]);
+  type SharedQueueItem = { url: string; title: string | null; id: number };
+  let djQueue: SharedQueueItem[] = $state([]);
+  type UpdateCheck = {
+    available: boolean;
+    currentVersion: string;
+    latestVersion: string | null;
+    dmgUrl: string | null;
+  };
+  type UpdateStatus = "checking" | "available" | "none";
+  let updateStatus: UpdateStatus = $state("checking");
+  let updateInfo: UpdateCheck | null = $state(null);
+  let updateCommand = $state("");
+  let startupStarted = $state(false);
+  type SharedHistoryItem = { url: string; title: string | null };
   type SharedQueueState = {
-    queue: string[];
+    queue: SharedQueueItem[];
     nowPlaying: { title: string; url: string } | null;
+    history: SharedHistoryItem[];
   };
   let nowPlaying: SharedQueueState["nowPlaying"] = $state(null);
+  let history: SharedHistoryItem[] = $state([]);
+  let showHistory = $state(false);
+  let skipping = $state(false);
+  let dragIndex: number | null = $state(null);
   let showDebug = $state(false);
   let debugLogs: string[] = $state([]);
   let participantPollInterval: ReturnType<typeof setInterval> | null = $state(null);
   let queuePollInterval: ReturnType<typeof setInterval> | null = $state(null);
+  let queueWebhookUnlisten: (() => void) | null = $state(null);
   let voiceChatEnabled = $state(false);
   let micTestActive = $state(false);
   let micLevel = $state(0);
@@ -135,8 +156,58 @@
     }
   }
 
-  checkSavedSetup();
-  loadMusicVolume();
+  function buildUpdateCommand(info: UpdateCheck) {
+    if (!info.dmgUrl || !info.latestVersion) return "";
+    return `curl -sL ${info.dmgUrl} -o /tmp/Gezellig.dmg && \\\n` +
+      `hdiutil attach /tmp/Gezellig.dmg -nobrowse -quiet && \\\n` +
+      `cp -R "/Volumes/Gezellig/Gezellig.app" /Applications/ && \\\n` +
+      `hdiutil detach "/Volumes/Gezellig" -quiet && \\\n` +
+      `rm /tmp/Gezellig.dmg && \\\n` +
+      `xattr -dr com.apple.quarantine /Applications/Gezellig.app && \\\n` +
+      `open /Applications/Gezellig.app`;
+  }
+
+  async function startApp() {
+    if (startupStarted) return;
+    startupStarted = true;
+    await checkSavedSetup();
+    loadMusicVolume();
+  }
+
+  async function checkForUpdate() {
+    try {
+      const result = await invoke<UpdateCheck>("check_for_update");
+      if (result.available && result.latestVersion && result.dmgUrl) {
+        updateInfo = result;
+        updateCommand = buildUpdateCommand(result);
+        updateStatus = "available";
+        return;
+      }
+    } catch {
+      // Outside Tauri or update check failed
+    }
+    updateStatus = "none";
+    await startApp();
+  }
+
+  onMount(async () => {
+    await checkForUpdate();
+  });
+
+  async function dismissUpdate() {
+    updateStatus = "none";
+    await startApp();
+  }
+
+  async function copyUpdateCommand() {
+    if (!updateCommand) return;
+    try {
+      await navigator.clipboard.writeText(updateCommand);
+      addNotification("Update command copied to clipboard");
+    } catch (e) {
+      debugLog(`copy update command error: ${e}`);
+    }
+  }
 
   async function connectToLiveKit() {
     try {
@@ -149,6 +220,7 @@
       debugLog('LiveKit connected successfully');
       startParticipantPolling();
       startQueuePolling();
+      await startQueueWebhookListener();
       if (djBotMode) {
         debugLog("DJ bot mode enabled");
         await startBotPlayback();
@@ -174,13 +246,31 @@
   function startQueuePolling() {
     if (queuePollInterval) return;
     refreshQueue();
-    queuePollInterval = setInterval(refreshQueue, 2000);
+    queuePollInterval = setInterval(refreshQueue, 10000);
   }
 
   function stopQueuePolling() {
     if (queuePollInterval) {
       clearInterval(queuePollInterval);
       queuePollInterval = null;
+    }
+  }
+
+  async function startQueueWebhookListener() {
+    if (queueWebhookUnlisten) return;
+    try {
+      queueWebhookUnlisten = await listen("shared-queue-updated", () => {
+        refreshQueue();
+      });
+    } catch {
+      // Outside Tauri
+    }
+  }
+
+  function stopQueueWebhookListener() {
+    if (queueWebhookUnlisten) {
+      queueWebhookUnlisten();
+      queueWebhookUnlisten = null;
     }
   }
 
@@ -231,6 +321,7 @@
     micLevel = 0;
     stopMicLevelPolling();
     stopQueuePolling();
+    stopQueueWebhookListener();
   }
 
   let canConnect = $derived(livekitUrl.length > 0 && livekitToken.length > 0);
@@ -253,7 +344,7 @@
       await refreshQueue();
     } catch (e) {
       debugLog(`addToQueue error: ${e}`);
-      djQueue = [...djQueue, url];
+      djQueue = [...djQueue, { url, title: null, id: 0 }];
     }
   }
 
@@ -261,9 +352,13 @@
     try {
       const state = await invoke<SharedQueueState>("get_shared_queue_state");
       djQueue = state.queue || [];
+      history = state.history || [];
+      const prev = nowPlaying;
       nowPlaying = state.nowPlaying ?? null;
+      if (prev?.url !== nowPlaying?.url || prev?.title !== nowPlaying?.title) {
+        skipping = false;
+      }
     } catch {
-      // Outside Tauri
       nowPlaying = null;
     }
   }
@@ -280,11 +375,46 @@
   }
 
   async function skipTrack() {
+    if (skipping) return;
+    skipping = true;
     try {
       await invoke("skip_track");
       debugLog("skip_track OK");
     } catch (e) {
       debugLog(`skip_track error: ${e}`);
+    }
+  }
+
+  async function requeueTrack(url: string) {
+    try {
+      await invoke("queue_track", { url });
+      debugLog(`Requeued: ${url}`);
+      await refreshQueue();
+    } catch (e) {
+      debugLog(`requeue error: ${e}`);
+    }
+  }
+
+  function handleDragStart(i: number) {
+    dragIndex = i;
+  }
+
+  async function handleDrop(targetIndex: number) {
+    if (dragIndex === null || dragIndex === targetIndex) {
+      dragIndex = null;
+      return;
+    }
+    const newQueue = [...djQueue];
+    const [moved] = newQueue.splice(dragIndex, 1);
+    newQueue.splice(targetIndex, 0, moved);
+    djQueue = newQueue;
+    dragIndex = null;
+    const order = newQueue.map(item => item.id);
+    try {
+      await invoke("reorder_queue", { order });
+      debugLog("reorder_queue OK");
+    } catch (e) {
+      debugLog(`reorder error: ${e}`);
     }
   }
 
@@ -337,6 +467,25 @@
   }
 
 </script>
+
+{#if updateStatus !== "none"}
+  <div class="update-overlay">
+    <div class="update-card">
+      {#if updateStatus === "checking"}
+        <h2>Checking for updates…</h2>
+        <p>Please wait.</p>
+      {:else if updateStatus === "available" && updateInfo}
+        <h2>🔄 Gezellig v{updateInfo.latestVersion} is available</h2>
+        <p>You have v{updateInfo.currentVersion}. Update required before continuing.</p>
+        <pre class="update-command">{updateCommand}</pre>
+        <div class="update-actions">
+          <button class="btn" onclick={copyUpdateCommand}>Copy update command</button>
+          <button class="btn btn-outline" onclick={dismissUpdate}>I'll update later</button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 {#if !setupComplete}
   <main class="setup-container">
@@ -494,18 +643,42 @@
                 {/if}
               </div>
               <div class="queue-actions">
-                <button data-testid="skip-track-button" class="btn btn-outline" onclick={skipTrack}>Skip</button>
+                <button data-testid="skip-track-button" class="btn btn-outline" onclick={skipTrack} disabled={skipping || !nowPlaying}>{skipping ? 'Skipping…' : 'Skip'}</button>
                 <button data-testid="clear-queue-button" class="btn btn-outline" onclick={clearQueue}>Clear Queue</button>
               </div>
               {#if djQueue.length > 0}
                 <div data-testid="dj-queue" class="queue-list">
                   <p class="queue-label">Queue ({djQueue.length})</p>
-                  {#each djQueue as url, i}
-                    <div class="queue-item">{i + 1}. {url}</div>
+                  {#each djQueue as item, i}
+                    <div
+                      class="queue-item"
+                      draggable="true"
+                      ondragstart={() => handleDragStart(i)}
+                      ondragover={(e) => e.preventDefault()}
+                      ondrop={() => handleDrop(i)}
+                      style={dragIndex === i ? 'opacity: 0.5' : ''}
+                    >⠿ {i + 1}. {item.title || item.url}</div>
                   {/each}
                 </div>
               {:else}
                 <p class="empty-state">No tracks queued yet</p>
+              {/if}
+              {#if history.length > 0}
+                <div class="queue-list">
+                  <button class="btn btn-outline" onclick={() => showHistory = !showHistory} data-testid="toggle-history-button">
+                    {showHistory ? 'Hide' : 'Show'} History ({history.length})
+                  </button>
+                  {#if showHistory}
+                    <div data-testid="history-panel">
+                      {#each history as item}
+                        <div class="queue-item history-item">
+                          <span>{item.title || item.url}</span>
+                          <button class="btn btn-outline btn-small" onclick={() => requeueTrack(item.url)} data-testid="requeue-button">Requeue</button>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
               {/if}
             </div>
         </div>
@@ -825,6 +998,55 @@ h2 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.queue-item[draggable="true"] {
+  cursor: grab;
+}
+.queue-item[draggable="true"]:active {
+  cursor: grabbing;
+}
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.history-item span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.btn-small {
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+}
+.update-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.update-card {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 2rem;
+  width: min(720px, 90vw);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+}
+.update-command {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  background: #f5f5f5;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+.update-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 /* ---- Settings panel ---- */

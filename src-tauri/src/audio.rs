@@ -20,10 +20,24 @@ pub struct SharedNowPlaying {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedQueueItem {
+    pub url: String,
+    pub title: Option<String>,
+    pub id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedHistoryItem {
+    pub url: String,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedQueueSnapshot {
-    pub queue: Vec<String>,
+    pub queue: Vec<SharedQueueItem>,
     pub now_playing: Option<SharedNowPlaying>,
+    pub history: Vec<SharedHistoryItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,6 +84,11 @@ pub trait AudioPipeline: Send + Sync {
 
     /// Clear the queue (shared if configured).
     fn clear_shared_queue(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Reorder queue items by their IDs.
+    fn reorder_queue(&self, _order: Vec<u64>) -> Result<(), String> {
         Ok(())
     }
 

@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::sync::{
     atomic::{AtomicU8, Ordering},
@@ -21,18 +23,76 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 
 use crate::audio::{AudioPipeline, DjStatus, NowPlaying, SharedNowPlaying, SharedQueueSnapshot};
 
-/// Info about a resolved audio track.
+/// Async reader that tees all read data into an async writer (for caching while streaming).
+struct TeeReader<R, W> {
+    reader: R,
+    writer: W,
+}
+
+impl<R, W> TeeReader<R, W> {
+    fn new(reader: R, writer: W) -> Self {
+        Self { reader, writer }
+    }
+}
+
+impl<R, W> tokio::io::AsyncRead for TeeReader<R, W>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        match Pin::new(&mut this.reader).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                let new_data = &buf.filled()[before..];
+                if !new_data.is_empty() {
+                    // Best-effort write to cache; ignore errors
+                    let _ = Pin::new(&mut this.writer).poll_write(cx, new_data);
+                }
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
+
+/// Info about a resolved audio track (used by non-streaming fallback path).
+#[allow(dead_code)]
 pub struct TrackInfo {
     pub title: String,
     pub audio_data: Vec<u8>,
 }
 
+/// A streaming audio source: provides PCM data as an async reader.
+pub enum StreamingAudioSource {
+    /// Reading from a cached PCM file.
+    Cached(tokio::fs::File),
+    /// Reading from a live yt-dlp|ffmpeg child process stdout, optionally teeing to cache.
+    Process {
+        child: tokio::process::Child,
+        cache_writer: Option<tokio::fs::File>,
+    },
+}
+
+/// Info for starting a streaming track.
+pub struct StreamingTrackInfo {
+    pub title: String,
+    pub source: StreamingAudioSource,
+}
+
 /// Trait for fetching audio from a URL. Abstraction allows swapping
 /// rusty_ytdl for yt-dlp or other backends.
+#[allow(dead_code)]
 #[async_trait::async_trait]
 pub trait AudioSource: Send + Sync {
     /// Fetch audio data and metadata for a URL.
@@ -102,7 +162,7 @@ impl AudioSource for RustyYtdlSource {
 /// YouTube audio source using yt-dlp CLI tool.
 /// Falls back to this when rusty_ytdl fails (e.g. 403 errors).
 pub struct YtDlpSource {
-    cache_dir: Option<std::path::PathBuf>,
+    pub(crate) cache_dir: Option<std::path::PathBuf>,
 }
 
 impl YtDlpSource {
@@ -203,6 +263,87 @@ impl AudioSource for YtDlpSource {
         }
 
         Ok(TrackInfo { title, audio_data })
+    }
+}
+
+impl YtDlpSource {
+    /// Fetch title for a URL (used before starting streaming).
+    async fn fetch_title(&self, url: &str) -> String {
+        use tokio::process::Command;
+        let title_output = Command::new("yt-dlp")
+            .args(["--get-title", "--no-warnings", url])
+            .output()
+            .await;
+        match title_output {
+            Ok(output) if output.status.success() => {
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            }
+            _ => "Unknown".to_string(),
+        }
+    }
+
+    /// Start streaming audio as PCM. Returns title + streaming source.
+    /// If cached, streams from the cached file. Otherwise spawns yt-dlp|ffmpeg
+    /// and tees output to cache.
+    pub async fn fetch_audio_streaming(&self, url: &str) -> Result<StreamingTrackInfo, String> {
+        use tokio::process::Command;
+
+        // Check cache first
+        if let (Some(pcm_path), Some(title_path)) = (self.cache_path(url), self.title_cache_path(url)) {
+            if pcm_path.exists() && title_path.exists() {
+                let title = std::fs::read_to_string(&title_path).unwrap_or_else(|_| "Cached".into());
+                let title = title.trim().to_string();
+                crate::dlog!("[DJ] Cache hit (streaming): '{}'", title);
+                let file = tokio::fs::File::open(&pcm_path)
+                    .await
+                    .map_err(|e| format!("Cache open error: {e}"))?;
+                return Ok(StreamingTrackInfo {
+                    title,
+                    source: StreamingAudioSource::Cached(file),
+                });
+            }
+        }
+
+        // Get title first
+        let title = self.fetch_title(url).await;
+        crate::dlog!("[DJ] yt-dlp streaming title: '{}'", title);
+
+        // Save title to cache
+        if let Some(title_path) = self.title_cache_path(url) {
+            let _ = std::fs::write(&title_path, &title);
+        }
+
+        // Spawn yt-dlp|ffmpeg process for streaming PCM
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                &format!(
+                    "yt-dlp -f bestaudio -o - --no-warnings --no-progress '{}' | ffmpeg -i pipe:0 -f s16le -acodec pcm_s16le -ar 48000 -ac 2 pipe:1 2>/dev/null",
+                    url.replace('\'', "'\\''")
+                ),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("yt-dlp|ffmpeg spawn failed: {e}"))?;
+
+        // Open cache file for writing if we have a cache path
+        let cache_writer = if let Some(pcm_path) = self.cache_path(url) {
+            match tokio::fs::File::create(&pcm_path).await {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    crate::dlog!("[DJ] Cache file create error: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(StreamingTrackInfo {
+            title,
+            source: StreamingAudioSource::Process { child, cache_writer },
+        })
     }
 }
 
@@ -322,6 +463,7 @@ struct QueueEvent {
     title: Option<String>,
     #[serde(rename = "ref")]
     ref_id: Option<u64>,
+    order: Option<Vec<u64>>,
 }
 
 #[derive(Debug, Clone)]
@@ -337,6 +479,8 @@ struct SharedQueueData {
     now_playing: Option<SharedNowPlayingInternal>,
     max_id: u64,
     skip_events: HashMap<u64, u64>,
+    needs_metadata: Vec<(u64, String)>,
+    history: Vec<(String, Option<String>)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -562,6 +706,13 @@ impl AudioPipeline for YouTubePipeline {
     fn set_local_playback(&self, enabled: bool) {
         self.local_playback_disabled.store(!enabled, Ordering::Relaxed);
     }
+
+    fn reorder_queue(&self, order: Vec<u64>) -> Result<(), String> {
+        if let Some(cfg) = self.shared_queue.as_ref() {
+            append_reorder_event(cfg, order)?;
+        }
+        Ok(())
+    }
 }
 
 /// The main playback loop: pops tracks from the queue, fetches, decodes, streams PCM.
@@ -593,9 +744,27 @@ async fn run_playback_loop(
             if should_fetch {
                 if let Ok(data) = fetch_shared_queue_data(cfg) {
                     if !data.items.is_empty() {
+                        // Prefetch next items (up to 10) in background
+                        let prefetch_items: Vec<String> = data.items.iter()
+                            .take(10)
+                            .map(|t| t.url.clone())
+                            .collect();
+                        let source_for_prefetch = YtDlpSource::new(source.cache_dir.clone());
+                        tokio::spawn(async move {
+                            prefetch_tracks(&source_for_prefetch, prefetch_items).await;
+                        });
+
                         if let Ok(mut q) = queue.lock() {
                             q.extend(data.items);
                         }
+                    }
+                    // Fetch metadata for items that don't have it yet
+                    if !data.needs_metadata.is_empty() {
+                        let cfg_clone = cfg.clone();
+                        let items = data.needs_metadata;
+                        tokio::spawn(async move {
+                            fetch_and_append_metadata(&cfg_clone, items).await;
+                        });
                     }
                     let _ = write_shared_state(cfg, SharedQueueState { last_seen_id: data.max_id });
                 }
@@ -631,15 +800,15 @@ async fn run_playback_loop(
             *s = DjStatus::Loading;
         }
 
-        // Fetch audio
-        crate::dlog!("[DJ] Fetching audio...");
-        let track_info = match source.fetch_audio(&track.url).await {
+        // Start streaming audio
+        crate::dlog!("[DJ] Starting streaming audio...");
+        let streaming_info = match source.fetch_audio_streaming(&track.url).await {
             Ok(info) => {
-                crate::dlog!("[DJ] Fetched: '{}' ({} bytes)", info.title, info.audio_data.len());
+                crate::dlog!("[DJ] Streaming: '{}'", info.title);
                 info
             }
             Err(e) => {
-                crate::dlog!("[DJ] Failed to fetch audio: {e}");
+                crate::dlog!("[DJ] Failed to start audio stream: {e}");
                 if let (Some(cfg), Some(queued_id)) = (shared_queue.as_ref(), track.queued_id) {
                     if let Err(err) = append_failed_event(cfg, queued_id) {
                         crate::dlog!("[DJ] Failed to append failed event: {err}");
@@ -649,36 +818,28 @@ async fn run_playback_loop(
             }
         };
 
+        let title = streaming_info.title.clone();
+
         // Update status to Playing
         if let Ok(mut s) = status.lock() {
             *s = DjStatus::Playing(NowPlaying {
-                track: track_info.title.clone(),
+                track: title.clone(),
                 artist: String::new(),
             });
         }
         let mut playing_event_id = None;
         if let (Some(cfg), Some(queued_id)) = (shared_queue.as_ref(), track.queued_id) {
-            match append_playing_event(cfg, queued_id, &track_info.title, &track.url) {
+            match append_playing_event(cfg, queued_id, &title, &track.url) {
                 Ok(id) => playing_event_id = Some(id),
                 Err(err) => crate::dlog!("[DJ] Failed to append playing event: {err}"),
             }
         }
 
-        // Audio data is already raw PCM s16le at 48kHz stereo from yt-dlp|ffmpeg
-        // Convert bytes to i16 samples
-        let samples: Vec<i16> = track_info
-            .audio_data
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
-            .collect();
-
-        crate::dlog!("[DJ] PCM: {} samples ({:.1}s at 48kHz stereo)", samples.len(), samples.len() as f64 / 48000.0 / 2.0);
-
-        // Optionally play audio through local speakers using rodio
+        // Set up local playback via rodio with a channel for streaming samples
         let use_local = !local_playback_disabled.load(Ordering::Relaxed);
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let (local_tx, local_rx) = std::sync::mpsc::channel::<Vec<i16>>();
         let playback_handle = if use_local {
-            let samples_clone = samples.clone();
             let volume = volume.clone();
             Some(std::thread::spawn(move || {
                 use rodio::{Sink, buffer::SamplesBuffer, stream::OutputStreamBuilder};
@@ -691,42 +852,69 @@ async fn run_playback_loop(
                 };
                 let sink = Sink::connect_new(stream.mixer());
 
-                let chunk_size = 48000 * 2; // 1 second of stereo audio
-                for chunk in samples_clone.chunks(chunk_size) {
-                    if stop_rx.try_recv().is_ok() {
-                        sink.stop();
-                        return;
-                    }
-                    let volume = volume.load(Ordering::Relaxed) as f32 / 100.0;
-                    sink.set_volume(volume);
-                    let f32_samples: Vec<f32> = chunk.iter().map(|&s| s as f32 / 32768.0).collect();
-                    let source = SamplesBuffer::new(2, 48000, f32_samples);
-                    sink.append(source);
-                }
-
                 loop {
                     if stop_rx.try_recv().is_ok() {
                         sink.stop();
                         return;
                     }
-                    if sink.empty() {
-                        return;
+                    match local_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok(samples) => {
+                            let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
+                            sink.set_volume(vol);
+                            let f32_samples: Vec<f32> = samples.iter().map(|&s| s as f32 / 32768.0).collect();
+                            let source = SamplesBuffer::new(2, 48000, f32_samples);
+                            sink.append(source);
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            // Check if sink is done and no more data coming
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            // Wait for sink to drain
+                            while !sink.empty() {
+                                if stop_rx.try_recv().is_ok() {
+                                    sink.stop();
+                                    return;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                            return;
+                        }
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
             }))
         } else {
             crate::dlog!("[DJ] Local playback disabled, audio goes to LiveKit only");
+            drop(local_rx);
             None
         };
 
-        // Stream PCM through channel for LiveKit publishing
-        let chunk_samples = 960; // 480 samples/channel * 2 channels = 10ms at 48kHz
+        // Stream PCM from source in chunks
+        let chunk_bytes = 960 * 2; // 960 samples * 2 bytes/sample = 10ms at 48kHz stereo
         let mut skipped = false;
         let mut last_skip_check = Instant::now();
         let skip_check_interval = std::time::Duration::from_secs(2);
+        let mut total_bytes = 0u64;
 
-        for chunk in samples.chunks(chunk_samples) {
+        let mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send> = match streaming_info.source {
+            StreamingAudioSource::Cached(file) => Box::new(file),
+            StreamingAudioSource::Process { mut child, cache_writer } => {
+                let stdout = child.stdout.take()
+                    .ok_or_else(|| "No stdout from yt-dlp process".to_string())
+                    .unwrap();
+                if let Some(cw) = cache_writer {
+                    // Tee: read from process, write to cache
+                    Box::new(TeeReader::new(stdout, cw))
+                } else {
+                    Box::new(stdout)
+                }
+            }
+        };
+
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; chunk_bytes];
+
+        loop {
+            // Check for skip signal
             if skip_rx.has_changed().unwrap_or(false) {
                 let _ = skip_rx.changed().await;
                 let _ = stop_tx.send(());
@@ -734,6 +922,7 @@ async fn run_playback_loop(
                 break;
             }
 
+            // Check shared queue skip events
             if let (Some(cfg), Some(queued_id), Some(event_id)) =
                 (shared_queue.as_ref(), track.queued_id, playing_event_id)
             {
@@ -757,11 +946,33 @@ async fn run_playback_loop(
                 break;
             }
 
-            let volume = volume.load(Ordering::Relaxed) as f32 / 100.0;
-            let bytes: Vec<u8> = chunk
+            // Read next chunk from stream
+            let n = match reader.read(&mut buf).await {
+                Ok(0) => break, // EOF
+                Ok(n) => n,
+                Err(e) => {
+                    crate::dlog!("[DJ] Stream read error: {e}");
+                    break;
+                }
+            };
+            total_bytes += n as u64;
+
+            // Convert bytes to i16 samples, apply volume, send to LiveKit
+            let volume_val = volume.load(Ordering::Relaxed) as f32 / 100.0;
+            let samples: Vec<i16> = buf[..n]
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .collect();
+
+            // Send to local playback
+            if use_local {
+                let _ = local_tx.send(samples.clone());
+            }
+
+            let bytes: Vec<u8> = samples
                 .iter()
                 .map(|s| {
-                    let scaled = (*s as f32 * volume)
+                    let scaled = (*s as f32 * volume_val)
                         .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                     scaled.to_le_bytes()
                 })
@@ -772,16 +983,21 @@ async fn run_playback_loop(
                 break;
             }
 
-            // Backpressure instead of dropping frames to avoid audio gaps/stutter.
             if pcm_sender.send(bytes).await.is_err() {
                 break;
             }
         }
 
+        drop(local_tx); // Signal local playback thread that stream is done
+        drop(reader);
+
+        crate::dlog!("[DJ] Streamed {} bytes total ({:.1}s at 48kHz stereo)",
+            total_bytes, total_bytes as f64 / 48000.0 / 2.0 / 2.0);
+
         if skipped {
             crate::dlog!("[DJ] Track skipped");
         } else {
-            crate::dlog!("[DJ] Track finished: {}", track_info.title);
+            crate::dlog!("[DJ] Track finished: {}", title);
         }
 
         if let (Some(cfg), Some(queued_id)) = (shared_queue.as_ref(), track.queued_id) {
@@ -809,8 +1025,10 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
     let mut played: HashSet<u64> = HashSet::new();
     let mut failed: HashSet<u64> = HashSet::new();
     let mut skip_events: HashMap<u64, u64> = HashMap::new();
+    let mut metadata: HashMap<u64, String> = HashMap::new();
     let mut last_cleared_id = 0;
     let mut now_playing: Option<SharedNowPlayingInternal> = None;
+    let mut latest_reorder: Option<Vec<u64>> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -850,13 +1068,25 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
                             skip_events.insert(ref_id, event.id);
                         }
                     }
+                    "metadata" => {
+                        if let (Some(ref_id), Some(title)) = (event.ref_id, event.title) {
+                            metadata.insert(ref_id, title);
+                        }
+                    }
                     "cleared" => {
                         last_cleared_id = last_cleared_id.max(event.id);
                         queued.clear();
                         played.clear();
                         failed.clear();
                         skip_events.clear();
+                        metadata.clear();
                         now_playing = None;
+                        latest_reorder = None;
+                    }
+                    "reordered" => {
+                        if let Some(order) = event.order {
+                            latest_reorder = Some(order);
+                        }
                     }
                     _ => {}
                 }
@@ -867,16 +1097,45 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
         }
     }
 
+    // Collect IDs that still need metadata
+    let needs_metadata: Vec<(u64, String)> = queued
+        .iter()
+        .filter(|(id, _)| *id > last_cleared_id && !metadata.contains_key(id))
+        .cloned()
+        .collect();
+
     queued.sort_by_key(|(id, _)| *id);
-    let items = queued
+
+    // Build history from played items (most recent first)
+    let history: Vec<(String, Option<String>)> = queued
+        .iter()
+        .filter(|(id, _)| *id > last_cleared_id && (played.contains(id) || failed.contains(id)))
+        .rev()
+        .map(|(id, url)| (url.clone(), metadata.get(id).cloned()))
+        .collect();
+
+    let mut items: Vec<QueuedTrack> = queued
         .into_iter()
         .filter(|(id, _)| *id > last_cleared_id && !played.contains(id) && !failed.contains(id))
-        .map(|(id, url)| QueuedTrack {
-            url,
-            title: "Shared Queue".to_string(),
-            queued_id: Some(id),
+        .map(|(id, url)| {
+            let title = metadata.get(&id).cloned();
+            QueuedTrack {
+                url,
+                title: title.unwrap_or_else(|| "Loading...".to_string()),
+                queued_id: Some(id),
+            }
         })
         .collect();
+
+    // Apply latest reorder if present
+    if let Some(ref order) = latest_reorder {
+        let order_map: HashMap<u64, usize> = order.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        items.sort_by_key(|t| {
+            t.queued_id
+                .and_then(|id| order_map.get(&id).copied())
+                .unwrap_or(usize::MAX)
+        });
+    }
 
     if let Some(ref_id) = now_playing.as_ref().and_then(|now| now.queued_id) {
         if played.contains(&ref_id) || failed.contains(&ref_id) {
@@ -889,17 +1148,29 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
         now_playing,
         max_id,
         skip_events,
+        needs_metadata,
+        history,
     })
 }
 
 fn shared_queue_snapshot_from_data(data: SharedQueueData) -> SharedQueueSnapshot {
+    use crate::audio::{SharedQueueItem, SharedHistoryItem};
     let now_playing = data.now_playing.map(|now| SharedNowPlaying {
         title: now.title,
         url: now.url,
     });
     SharedQueueSnapshot {
-        queue: data.items.into_iter().map(|t| t.url).collect(),
+        queue: data.items.into_iter().map(|t| {
+            SharedQueueItem {
+                url: t.url,
+                title: if t.title == "Loading..." { None } else { Some(t.title) },
+                id: t.queued_id.unwrap_or(0),
+            }
+        }).collect(),
         now_playing,
+        history: data.history.into_iter().map(|(url, title)| {
+            SharedHistoryItem { url, title }
+        }).collect(),
     }
 }
 
@@ -1035,6 +1306,114 @@ fn append_cleared_event(cfg: &SharedQueueConfig) -> Result<u64, String> {
     append_event_with_retry(cfg, event_builder)
 }
 
+fn append_reorder_event(cfg: &SharedQueueConfig, order: Vec<u64>) -> Result<u64, String> {
+    let event_builder = move |next_id| {
+        serde_json::json!({
+            "id": next_id,
+            "type": "reordered",
+            "order": order,
+        })
+    };
+    append_event_with_retry(cfg, event_builder)
+}
+
+fn append_metadata_event(
+    cfg: &SharedQueueConfig,
+    queued_id: u64,
+    title: &str,
+    url: &str,
+) -> Result<u64, String> {
+    let title = title.to_string();
+    let url = url.to_string();
+    let event_builder = move |next_id| {
+        serde_json::json!({
+            "id": next_id,
+            "type": "metadata",
+            "ref": queued_id,
+            "title": title,
+            "url": url,
+        })
+    };
+    append_event_with_retry(cfg, event_builder)
+}
+
+/// Fetch metadata (title) for queued items that don't have it yet, and append metadata events.
+async fn fetch_and_append_metadata(cfg: &SharedQueueConfig, items: Vec<(u64, String)>) {
+    for (queued_id, url) in items {
+        let title_output = tokio::process::Command::new("yt-dlp")
+            .args(["--get-title", "--no-warnings", &url])
+            .output()
+            .await;
+        let title = match title_output {
+            Ok(output) if output.status.success() => {
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            }
+            _ => continue,
+        };
+        crate::dlog!("[DJ] Fetched metadata for queued {}: '{}'", queued_id, title);
+        if let Err(e) = append_metadata_event(cfg, queued_id, &title, &url) {
+            crate::dlog!("[DJ] Failed to append metadata event: {e}");
+        }
+    }
+}
+
+/// Prefetch upcoming tracks by downloading them to cache.
+/// Also enforces a max of 10 cached items (LRU eviction).
+async fn prefetch_tracks(source: &YtDlpSource, urls: Vec<String>) {
+    let cache_dir = match source.cache_dir.as_ref() {
+        Some(d) => d,
+        None => return,
+    };
+
+    for url in &urls {
+        if let Some(pcm_path) = source.cache_path(url) {
+            if pcm_path.exists() {
+                continue; // Already cached
+            }
+        }
+        crate::dlog!("[DJ] Prefetching: {}", url);
+        // Use the non-streaming fetch to download fully to cache
+        match source.fetch_audio(url).await {
+            Ok(info) => crate::dlog!("[DJ] Prefetched: '{}' ({} bytes)", info.title, info.audio_data.len()),
+            Err(e) => crate::dlog!("[DJ] Prefetch failed for {}: {}", url, e),
+        }
+    }
+
+    // Enforce cache limit: keep only the 10 most recently modified .pcm files
+    enforce_cache_limit(cache_dir, 10);
+}
+
+/// Remove oldest cached .pcm (and matching .title) files if count exceeds limit.
+fn enforce_cache_limit(cache_dir: &std::path::Path, max_items: usize) {
+    let mut pcm_files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(cache_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "pcm").unwrap_or(false) {
+                let mtime = entry.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                pcm_files.push((path, mtime));
+            }
+        }
+    }
+
+    if pcm_files.len() <= max_items {
+        return;
+    }
+
+    // Sort by mtime ascending (oldest first)
+    pcm_files.sort_by_key(|(_, mtime)| *mtime);
+    let to_remove = pcm_files.len() - max_items;
+    for (path, _) in pcm_files.iter().take(to_remove) {
+        crate::dlog!("[DJ] Evicting cached: {}", path.display());
+        let _ = std::fs::remove_file(path);
+        // Also remove matching .title file
+        let title_path = path.with_extension("title");
+        let _ = std::fs::remove_file(title_path);
+    }
+}
+
 fn append_event_with_ref(cfg: &SharedQueueConfig, event_type: &str, queued_id: u64) -> Result<u64, String> {
     let event_builder = |next_id| {
         serde_json::json!({
@@ -1161,5 +1540,63 @@ mod tests {
     fn decode_audio_returns_error_for_invalid_data() {
         let result = decode_audio_to_pcm(vec![0, 1, 2, 3]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn enforce_cache_limit_removes_oldest() {
+        let dir = std::env::temp_dir().join("gezellig-cache-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create 12 cached files with staggered mtimes
+        for i in 0..12 {
+            let pcm = dir.join(format!("video{i}.pcm"));
+            let title = dir.join(format!("video{i}.title"));
+            std::fs::write(&pcm, format!("data{i}")).unwrap();
+            std::fs::write(&title, format!("Title {i}")).unwrap();
+            // Sleep briefly to ensure different mtimes
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        enforce_cache_limit(&dir, 10);
+
+        let remaining: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "pcm").unwrap_or(false))
+            .collect();
+        assert_eq!(remaining.len(), 10);
+
+        // Oldest two (video0 and video1) should be removed
+        assert!(!dir.join("video0.pcm").exists());
+        assert!(!dir.join("video0.title").exists());
+        assert!(!dir.join("video1.pcm").exists());
+        assert!(!dir.join("video1.title").exists());
+        // video2 should still exist
+        assert!(dir.join("video2.pcm").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enforce_cache_limit_noop_under_limit() {
+        let dir = std::env::temp_dir().join("gezellig-cache-test-noop");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for i in 0..5 {
+            std::fs::write(dir.join(format!("v{i}.pcm")), "data").unwrap();
+        }
+
+        enforce_cache_limit(&dir, 10);
+
+        let remaining: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "pcm").unwrap_or(false))
+            .collect();
+        assert_eq!(remaining.len(), 5);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
