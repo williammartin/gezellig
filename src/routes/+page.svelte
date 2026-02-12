@@ -43,7 +43,6 @@
   let showDebug = $state(false);
   let debugLogs: string[] = $state([]);
   let participantPollInterval: ReturnType<typeof setInterval> | null = $state(null);
-  let queuePollInterval: ReturnType<typeof setInterval> | null = $state(null);
   let queueWebhookUnlisten: (() => void) | null = $state(null);
   let voiceChatEnabled = $state(false);
   let micTestActive = $state(false);
@@ -224,7 +223,7 @@
       addNotification('Connected to LiveKit');
       debugLog('LiveKit connected successfully');
       startParticipantPolling();
-      startQueuePolling();
+      refreshQueue();
       await startQueueWebhookListener();
       if (djBotMode) {
         debugLog("DJ bot mode enabled");
@@ -248,18 +247,9 @@
     }
   }
 
-  function startQueuePolling() {
-    if (queuePollInterval) return;
-    refreshQueue();
-    queuePollInterval = setInterval(refreshQueue, 10000);
-  }
+  function startQueuePolling() {}
 
-  function stopQueuePolling() {
-    if (queuePollInterval) {
-      clearInterval(queuePollInterval);
-      queuePollInterval = null;
-    }
-  }
+  function stopQueuePolling() {}
 
   async function startQueueWebhookListener() {
     if (queueWebhookUnlisten) return;

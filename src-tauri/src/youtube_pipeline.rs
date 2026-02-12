@@ -751,7 +751,6 @@ async fn run_playback_loop(
     let source = YtDlpSource::new(cache_dir);
     crate::dlog!("[DJ] Playback loop started");
 
-    let use_webhook_updates = shared_queue_updates.is_some();
     if let (Some(cfg), Some(updates_tx)) = (shared_queue.clone(), shared_queue_updates.clone()) {
         let queue_sync = queue.clone();
         let active_sync = active.clone();
@@ -814,30 +813,6 @@ async fn run_playback_loop(
         // Check if still active
         if !*active.lock().unwrap_or_else(|e| e.into_inner()) {
             break;
-        }
-
-        if !use_webhook_updates {
-            if let Some(cfg) = shared_queue.as_ref() {
-                let should_fetch = queue
-                    .lock()
-                    .map(|q| q.is_empty())
-                    .unwrap_or(true);
-                if should_fetch {
-                    if let Ok(data) = fetch_shared_queue_data(cfg) {
-                        if let Ok(mut q) = queue.lock() {
-                            *q = data.items;
-                        }
-                        if !data.needs_metadata.is_empty() {
-                            let cfg_clone = cfg.clone();
-                            let items = data.needs_metadata;
-                            tokio::spawn(async move {
-                                fetch_and_append_metadata(&cfg_clone, items).await;
-                            });
-                        }
-                        let _ = write_shared_state(cfg, SharedQueueState { last_seen_id: data.max_id });
-                    }
-                }
-            }
         }
 
         // Pop next track from queue
