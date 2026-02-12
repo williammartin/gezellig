@@ -699,10 +699,22 @@ impl AudioPipeline for YouTubePipeline {
 
     fn clear_shared_queue(&self) -> Result<(), String> {
         if let Some(cfg) = self.shared_queue.as_ref() {
+            if let Ok(data) = fetch_shared_queue_data(cfg) {
+                if let Some(now) = data.now_playing {
+                    if let Some(queued_id) = now.queued_id {
+                        let _ = append_skip_event(cfg, queued_id);
+                    }
+                }
+            }
             append_cleared_event(cfg)?;
         } else {
             let mut queue = self.queue.lock().map_err(|e| e.to_string())?;
             queue.clear();
+        }
+        if let Ok(tx) = self.skip_tx.lock() {
+            if let Some(tx) = tx.as_ref() {
+                let _ = tx.send(true);
+            }
         }
         Ok(())
     }

@@ -119,13 +119,13 @@ async fn create_webhook(gh_path: &str, repo: &str) -> Result<CreateHookResponse,
             &format!("repos/{repo}/hooks"),
             "-f",
             "name=cli",
-            "-f",
+            "-F",
             "active=false",
             "-f",
             "events[]=push",
             "-f",
             "config[content_type]=json",
-            "-f",
+            "-F",
             "config[insecure_ssl]=0",
         ])
         .output()
@@ -139,7 +139,7 @@ async fn create_webhook(gh_path: &str, repo: &str) -> Result<CreateHookResponse,
 
 async fn activate_hook(gh_path: &str, hook_url: &str) -> Result<(), String> {
     let output = tokio::process::Command::new(gh_path)
-        .args(["api", "-X", "PATCH", hook_url, "-f", "active=true"])
+        .args(["api", "-X", "PATCH", hook_url, "-F", "active=true"])
         .output()
         .await
         .map_err(|e| format!("Failed to run gh api: {e}"))?;
