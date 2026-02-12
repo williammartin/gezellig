@@ -4,7 +4,7 @@ use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 
 #[derive(Debug, Deserialize)]
 struct CreateHookResponse {
@@ -199,11 +199,14 @@ async fn connect_websocket(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     String,
 > {
-    let request = http::Request::builder()
-        .uri(ws_url)
-        .header("Authorization", token)
-        .body(())
+    let mut request = ws_url
+        .into_client_request()
         .map_err(|e| format!("Failed to build websocket request: {e}"))?;
+    request.headers_mut().insert(
+        "Authorization",
+        http::HeaderValue::from_str(token)
+            .map_err(|e| format!("Invalid auth header: {e}"))?,
+    );
     let (ws, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|e| format!("Failed to connect websocket: {e}"))?;
