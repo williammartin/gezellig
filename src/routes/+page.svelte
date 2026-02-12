@@ -79,6 +79,7 @@
 
   let displayName = $derived(extractIdentityFromToken(livekitToken));
   let webhookSecret = $derived(extractSecretFromToken(livekitToken));
+  let hookStorageKey = $derived(`gezellig-queue-hook-id:${webhookSecret}`);
 
   async function loadMusicVolume() {
     try {
@@ -237,12 +238,18 @@
       startParticipantPolling();
       refreshQueue();
       try {
-        await invoke("start_queue_webhook", {
+        const storedHookId = localStorage.getItem(hookStorageKey);
+        const hookId = storedHookId ? Number.parseInt(storedHookId, 10) : null;
+        const createdHookId = await invoke<number>("start_queue_webhook", {
           repo: sharedQueueRepo,
           path: sharedQueueFile,
           ghPath,
           secret: webhookSecret,
+          hookId: Number.isFinite(hookId) ? hookId : null,
         });
+        if (createdHookId && createdHookId > 0) {
+          localStorage.setItem(hookStorageKey, createdHookId.toString());
+        }
       } catch (e) {
         debugLog(`start_queue_webhook error: ${e}`);
       }
@@ -319,6 +326,12 @@
       // Running outside Tauri
     }
     localStorage.removeItem("gezellig-setup");
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("gezellig-queue-hook-id:")) {
+        localStorage.removeItem(key);
+      }
+    }
     livekitConnected = false;
     setupComplete = false;
     showSettings = false;

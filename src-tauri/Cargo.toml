@@ -1,6 +1,6 @@
 [package]
 name = "gezellig"
-version = "0.0.10"
+version = "0.0.11"
 description = "A virtual office app with presence, audio rooms, and YouTube DJ"
 authors = ["you"]
 edition = "2021"

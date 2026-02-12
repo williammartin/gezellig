@@ -555,12 +555,13 @@ fn start_queue_webhook(
     path: String,
     gh_path: String,
     secret: String,
-) -> Result<(), String> {
+    hook_id: Option<u64>,
+) -> Result<u64, String> {
     if secret.trim().is_empty() {
         return Err("Webhook secret is required".to_string());
     }
     if started.0.swap(true, Ordering::SeqCst) {
-        return Ok(());
+        return Ok(hook_id.unwrap_or(0));
     }
     tracing::info!(
         event = "queue_webhook_requested",
@@ -574,9 +575,10 @@ fn start_queue_webhook(
         path,
         gh_path,
         secret,
+        hook_id,
         Some(updates_tx.0.clone()),
     );
-    Ok(())
+    Ok(hook_id.unwrap_or(0))
 }
 
 #[tauri::command]

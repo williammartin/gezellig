@@ -8,29 +8,19 @@ use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 
 #[derive(Debug, Deserialize)]
 struct CreateHookResponse {
+    id: u64,
     url: String,
     #[serde(rename = "ws_url")]
     ws_url: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct WebhookSummary {
+struct WebhookDetails {
     id: u64,
     name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WebhookDetails {
     url: String,
     #[serde(rename = "ws_url")]
     ws_url: Option<String>,
-    #[serde(default)]
-    config: WebhookConfig,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct WebhookConfig {
-    secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,10 +39,11 @@ pub fn spawn_shared_queue_webhook(
     path: String,
     gh_path: String,
     secret: String,
+    hook_id: Option<u64>,
     updates_tx: Option<tokio::sync::broadcast::Sender<()>>,
 ) {
     tauri::async_runtime::spawn(async move {
-        if let Err(err) = run_webhook_listener(app, repo, path, gh_path, secret, updates_tx).await {
+        if let Err(err) = run_webhook_listener(app, repo, path, gh_path, secret, hook_id, updates_tx).await {
             crate::dlog!("[Queue] Webhook listener error: {err}");
         }
     });
@@ -64,6 +55,7 @@ async fn run_webhook_listener(
     path: String,
     gh_path: String,
     secret: String,
+    mut hook_id: Option<u64>,
     updates_tx: Option<tokio::sync::broadcast::Sender<()>>,
 ) -> Result<(), String> {
     let host = std::env::var("GH_HOST").unwrap_or_else(|_| "github.com".to_string());
@@ -77,15 +69,38 @@ async fn run_webhook_listener(
 
     loop {
         tracing::info!(event = "queue_webhook_create", repo = %repo);
-        let hook = match create_webhook(&gh_path, &repo, &secret).await {
-            Ok(hook) => hook,
-            Err(err) => {
-                tracing::warn!(event = "queue_webhook_create_failed", error = %err);
-                crate::dlog!("[Queue] Webhook create error: {err}");
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                continue;
+        let hook = if let Some(existing_id) = hook_id {
+            match get_webhook(&gh_path, &repo, existing_id).await {
+                Ok(details) if details.name == "cli" => {
+                    if let Some(ws_url) = details.ws_url {
+                        tracing::info!(event = "queue_webhook_loaded", hook_id = details.id, ws_url = %ws_url);
+                        Some(CreateHookResponse { id: details.id, url: details.url, ws_url })
+                    } else {
+                        None
+                    }
+                }
+                Ok(_) => None,
+                Err(err) => {
+                    tracing::warn!(event = "queue_webhook_load_failed", hook_id = existing_id, error = %err);
+                    None
+                }
             }
+        } else {
+            None
         };
+        let hook = match hook {
+            Some(hook) => hook,
+            None => match create_webhook(&gh_path, &repo, &secret).await {
+                Ok(hook) => hook,
+                Err(err) => {
+                    tracing::warn!(event = "queue_webhook_create_failed", error = %err);
+                    crate::dlog!("[Queue] Webhook create error: {err}");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            },
+        };
+        hook_id = Some(hook.id);
         tracing::info!(
             event = "queue_webhook_created",
             hook_url = %hook.url,
@@ -205,7 +220,7 @@ async fn create_webhook(
     repo: &str,
     secret: &str,
 ) -> Result<CreateHookResponse, String> {
-    for attempt in 0..2 {
+    for _attempt in 0..2 {
         let mut args = vec![
             "api".to_string(),
             "-X".to_string(),
@@ -233,39 +248,10 @@ async fn create_webhook(
             return serde_json::from_slice(&output.stdout)
                 .map_err(|e| format!("Invalid webhook response: {e}"));
         }
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        if attempt == 0 && stderr.contains("Validation Failed") {
-            if let Ok(hooks) = list_webhooks(gh_path, repo).await {
-                for hook in hooks.into_iter().filter(|h| h.name == "cli") {
-                    if let Ok(details) = get_webhook(gh_path, repo, hook.id).await {
-                        let secret_match = details.config.secret.as_deref() == Some(secret);
-                        if secret_match {
-                            if let Some(ws_url) = details.ws_url {
-                                return Ok(CreateHookResponse { url: details.url, ws_url });
-                            }
-                        }
-                    }
-                }
-            }
-            return Err("No existing CLI hook matches the configured secret".to_string());
-        }
-        return Err(stderr);
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
     Err("Failed to create webhook".to_string())
 }
-
-async fn list_webhooks(gh_path: &str, repo: &str) -> Result<Vec<WebhookSummary>, String> {
-    let output = tokio::process::Command::new(gh_path)
-        .args(["api", &format!("repos/{repo}/hooks")])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run gh api: {e}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-    serde_json::from_slice(&output.stdout).map_err(|e| format!("Invalid webhooks response: {e}"))
-}
-
 
 async fn get_webhook(gh_path: &str, repo: &str, hook_id: u64) -> Result<WebhookDetails, String> {
     let output = tokio::process::Command::new(gh_path)
