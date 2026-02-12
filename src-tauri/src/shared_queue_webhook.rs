@@ -53,58 +53,76 @@ async fn run_webhook_listener(
     let host = std::env::var("GH_HOST").unwrap_or_else(|_| "github.com".to_string());
     let token = gh_auth_token(&gh_path, &host).await?;
     let hook = create_webhook(&gh_path, &repo).await?;
-    let mut ws = connect_websocket(&hook.ws_url, &token).await?;
     activate_hook(&gh_path, &hook.url).await?;
 
-    crate::dlog!("[Queue] Webhook listener connected");
     loop {
-        let msg = match ws.next().await {
-            Some(Ok(msg)) => msg,
-            Some(Err(err)) => return Err(format!("websocket read error: {err}")),
-            None => return Err("websocket closed".to_string()),
-        };
-        let text = match msg {
-            Message::Text(text) => text.to_string(),
-            Message::Binary(bytes) => String::from_utf8(bytes.to_vec())
-                .map_err(|e| format!("invalid websocket utf8: {e}"))?,
-            _ => continue,
-        };
-        let event_json: serde_json::Value = match serde_json::from_str(&text) {
-            Ok(value) => value,
+        let mut ws = match connect_websocket(&hook.ws_url, &token).await {
+            Ok(ws) => ws,
             Err(err) => {
-                crate::dlog!("[Queue] Invalid websocket payload JSON: {err}");
+                crate::dlog!("[Queue] Webhook connect error: {err}");
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 continue;
             }
         };
-        let body = match event_json.get("Body").and_then(|v| v.as_str()) {
-            Some(body) => body,
-            None => {
-                crate::dlog!("[Queue] Webhook payload missing Body field, skipping");
-                continue;
+
+        crate::dlog!("[Queue] Webhook listener connected");
+        loop {
+            let msg = match ws.next().await {
+                Some(Ok(msg)) => msg,
+                Some(Err(err)) => {
+                    crate::dlog!("[Queue] Webhook read error: {err}");
+                    break;
+                }
+                None => {
+                    crate::dlog!("[Queue] Webhook closed, reconnecting");
+                    break;
+                }
+            };
+            let text = match msg {
+                Message::Text(text) => text.to_string(),
+                Message::Binary(bytes) => String::from_utf8(bytes.to_vec())
+                    .map_err(|e| format!("invalid websocket utf8: {e}"))?,
+                _ => continue,
+            };
+            let event_json: serde_json::Value = match serde_json::from_str(&text) {
+                Ok(value) => value,
+                Err(err) => {
+                    crate::dlog!("[Queue] Invalid websocket payload JSON: {err}");
+                    continue;
+                }
+            };
+            let body = match event_json.get("Body").and_then(|v| v.as_str()) {
+                Some(body) => body,
+                None => {
+                    crate::dlog!("[Queue] Webhook payload missing Body field, skipping");
+                    continue;
+                }
+            };
+            let body_bytes = base64::engine::general_purpose::STANDARD
+                .decode(body.as_bytes())
+                .map_err(|e| format!("invalid webhook body encoding: {e}"))?;
+            let body_json: serde_json::Value = serde_json::from_slice(&body_bytes)
+                .map_err(|e| format!("invalid webhook body json: {e}"))?;
+            if queue_path_touched(&body_json, &repo, &path) {
+                crate::dlog!("[Queue] Webhook event: {}", body_json);
+                let _ = app.emit("shared-queue-updated", ());
+                if let Some(tx) = updates_tx.as_ref() {
+                    let _ = tx.send(());
+                }
             }
-        };
-        let body_bytes = base64::engine::general_purpose::STANDARD
-            .decode(body.as_bytes())
-            .map_err(|e| format!("invalid webhook body encoding: {e}"))?;
-        let body_json: serde_json::Value = serde_json::from_slice(&body_bytes)
-            .map_err(|e| format!("invalid webhook body json: {e}"))?;
-        if queue_path_touched(&body_json, &repo, &path) {
-            crate::dlog!("[Queue] Webhook event: {}", body_json);
-            let _ = app.emit("shared-queue-updated", ());
-            if let Some(tx) = updates_tx.as_ref() {
-                let _ = tx.send(());
+            let ack = WsEventAck {
+                status: 200,
+                header: HashMap::new(),
+                body: base64::engine::general_purpose::STANDARD.encode("OK"),
+            };
+            let ack_text = serde_json::to_string(&ack)
+                .map_err(|e| format!("failed to serialize webhook ack: {e}"))?;
+            if let Err(err) = ws.send(Message::Text(ack_text.into())).await {
+                crate::dlog!("[Queue] Webhook ack error: {err}");
+                break;
             }
         }
-        let ack = WsEventAck {
-            status: 200,
-            header: HashMap::new(),
-            body: base64::engine::general_purpose::STANDARD.encode("OK"),
-        };
-        let ack_text = serde_json::to_string(&ack)
-            .map_err(|e| format!("failed to serialize webhook ack: {e}"))?;
-        ws.send(Message::Text(ack_text.into()))
-            .await
-            .map_err(|e| format!("websocket write error: {e}"))?;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }
 
