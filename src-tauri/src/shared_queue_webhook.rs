@@ -52,21 +52,28 @@ async fn run_webhook_listener(
 ) -> Result<(), String> {
     let host = std::env::var("GH_HOST").unwrap_or_else(|_| "github.com".to_string());
     let token = gh_auth_token(&gh_path, &host).await?;
-    let hook = create_webhook(&gh_path, &repo).await?;
 
     loop {
+        let hook = match create_webhook(&gh_path, &repo).await {
+            Ok(hook) => hook,
+            Err(err) => {
+                crate::dlog!("[Queue] Webhook create error: {err}");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                continue;
+            }
+        };
         let mut ws = match connect_websocket(&hook.ws_url, &token).await {
             Ok(ws) => ws,
             Err(err) => {
                 crate::dlog!("[Queue] Webhook connect error: {err}");
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
         };
 
         if let Err(err) = activate_hook(&gh_path, &hook.url).await {
             crate::dlog!("[Queue] Webhook activate error: {err}");
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             continue;
         }
 
