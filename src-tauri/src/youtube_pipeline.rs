@@ -730,35 +730,27 @@ async fn run_playback_loop(
     let source = YtDlpSource::new(cache_dir);
     crate::dlog!("[DJ] Playback loop started");
 
-    loop {
-        // Check if still active
-        if !*active.lock().unwrap_or_else(|e| e.into_inner()) {
-            break;
-        }
+    if let Some(cfg) = shared_queue.clone() {
+        let queue_sync = queue.clone();
+        let active_sync = active.clone();
+        let cache_dir = source.cache_dir.clone();
+        tokio::spawn(async move {
+            loop {
+                if !*active_sync.lock().unwrap_or_else(|e| e.into_inner()) {
+                    break;
+                }
+                if let Ok(data) = fetch_shared_queue_data(&cfg) {
+                    // Prefetch next two items whenever we see the queue
+                    let prefetch_items: Vec<String> = data.items.iter()
+                        .take(2)
+                        .map(|t| t.url.clone())
+                        .collect();
+                    let source_for_prefetch = YtDlpSource::new(cache_dir.clone());
+                    prefetch_tracks(&source_for_prefetch, prefetch_items).await;
 
-        if let Some(cfg) = shared_queue.as_ref() {
-            let should_fetch = queue
-                .lock()
-                .map(|q| q.is_empty())
-                .unwrap_or(true);
-            if should_fetch {
-                if let Ok(data) = fetch_shared_queue_data(cfg) {
-                    if !data.items.is_empty() {
-                        // Prefetch next items (up to 10) in background
-                        let prefetch_items: Vec<String> = data.items.iter()
-                            .take(10)
-                            .map(|t| t.url.clone())
-                            .collect();
-                        let source_for_prefetch = YtDlpSource::new(source.cache_dir.clone());
-                        tokio::spawn(async move {
-                            prefetch_tracks(&source_for_prefetch, prefetch_items).await;
-                        });
-
-                        if let Ok(mut q) = queue.lock() {
-                            q.extend(data.items);
-                        }
+                    if let Ok(mut q) = queue_sync.lock() {
+                        *q = data.items;
                     }
-                    // Fetch metadata for items that don't have it yet
                     if !data.needs_metadata.is_empty() {
                         let cfg_clone = cfg.clone();
                         let items = data.needs_metadata;
@@ -766,9 +758,17 @@ async fn run_playback_loop(
                             fetch_and_append_metadata(&cfg_clone, items).await;
                         });
                     }
-                    let _ = write_shared_state(cfg, SharedQueueState { last_seen_id: data.max_id });
+                    let _ = write_shared_state(&cfg, SharedQueueState { last_seen_id: data.max_id });
                 }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
+        });
+    }
+
+    loop {
+        // Check if still active
+        if !*active.lock().unwrap_or_else(|e| e.into_inner()) {
+            break;
         }
 
         // Pop next track from queue
@@ -1114,9 +1114,15 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
         .map(|(id, url)| (url.clone(), metadata.get(id).cloned()))
         .collect();
 
+    let playing_id = now_playing.as_ref().and_then(|now| now.queued_id);
     let mut items: Vec<QueuedTrack> = queued
         .into_iter()
-        .filter(|(id, _)| *id > last_cleared_id && !played.contains(id) && !failed.contains(id))
+        .filter(|(id, _)| {
+            *id > last_cleared_id
+                && !played.contains(id)
+                && !failed.contains(id)
+                && Some(*id) != playing_id
+        })
         .map(|(id, url)| {
             let title = metadata.get(&id).cloned();
             QueuedTrack {
