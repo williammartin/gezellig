@@ -75,7 +75,7 @@ test.describe('Settings', () => {
     await expect(fileField).toBeVisible();
     await expect(ghPathField).toBeVisible();
     await expect(repoField).toHaveValue('williammartin/gezellig-queue');
-    await expect(fileField).toHaveValue('queue.ndjson');
+    await expect(fileField).toHaveValue('events.ndjson');
     await expect(ghPathField).toHaveValue('gh');
   });
 });

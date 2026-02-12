@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU8, Ordering};
 use tauri::{Manager, State};
 use tracing_subscriber::EnvFilter;
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::{broadcast, Mutex as TokioMutex};
 
 struct SettingsPath(std::path::PathBuf);
 struct PlaybackVolume(Arc<AtomicU8>);
@@ -623,6 +623,7 @@ pub fn run() {
 
             let cache_dir = app.path().app_cache_dir().ok().map(|d| d.join("audio"));
             let shared_state = app_dir.join("shared_queue_state.json");
+            let (queue_updates_tx, _) = broadcast::channel(16);
             let pipeline = youtube_pipeline::YouTubePipeline::with_cache_dir_and_state(
                 cache_dir,
                 Some(shared_state),
@@ -631,6 +632,7 @@ pub fn run() {
                     shared_queue_file.clone(),
                     gh_path.clone(),
                 )),
+                Some(queue_updates_tx.clone()),
             );
             app.manage(Mutex::new(Box::new(pipeline) as DynAudioPipeline));
             shared_queue_webhook::spawn_shared_queue_webhook(
@@ -638,6 +640,7 @@ pub fn run() {
                 shared_queue_repo,
                 shared_queue_file,
                 gh_path,
+                Some(queue_updates_tx),
             );
 
             Ok(())

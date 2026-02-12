@@ -10,7 +10,7 @@
   let livekitUrl = $state("wss://gezellig-tmbd1vyo.livekit.cloud");
   let livekitToken = $state("");
   let sharedQueueRepo = $state("williammartin/gezellig-queue");
-  let sharedQueueFile = $state("queue.ndjson");
+  let sharedQueueFile = $state("events.ndjson");
   let ghPath = $state("gh");
   let setupComplete = $state(false);
   let livekitConnected = $state(false);
@@ -311,7 +311,7 @@
     livekitUrl = "wss://gezellig-tmbd1vyo.livekit.cloud";
     livekitToken = "";
     sharedQueueRepo = "williammartin/gezellig-queue";
-    sharedQueueFile = "queue.ndjson";
+    sharedQueueFile = "events.ndjson";
     ghPath = "gh";
     inRoom = false;
     roomParticipants = [];

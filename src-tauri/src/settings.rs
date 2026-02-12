@@ -23,7 +23,7 @@ fn default_shared_queue_repo() -> String {
 }
 
 fn default_shared_queue_file() -> String {
-    "queue.ndjson".to_string()
+    "events.ndjson".to_string()
 }
 
 fn default_gh_path() -> String {
@@ -72,7 +72,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.livekit_url, "");
         assert_eq!(settings.shared_queue_repo, "williammartin/gezellig-queue");
-        assert_eq!(settings.shared_queue_file, "queue.ndjson");
+        assert_eq!(settings.shared_queue_file, "events.ndjson");
         assert_eq!(settings.gh_path, "gh");
     }
 
@@ -87,7 +87,7 @@ mod tests {
         let settings = Settings {
             livekit_url: "wss://example.livekit.cloud".to_string(),
             shared_queue_repo: "owner/repo".to_string(),
-            shared_queue_file: "queue.ndjson".to_string(),
+            shared_queue_file: "events.ndjson".to_string(),
             gh_path: "/usr/local/bin/gh".to_string(),
         };
 

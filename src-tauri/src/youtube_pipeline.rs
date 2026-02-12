@@ -504,18 +504,20 @@ pub struct YouTubePipeline {
     loop_running: Arc<std::sync::atomic::AtomicBool>,
     cache_dir: Option<std::path::PathBuf>,
     shared_queue: Option<SharedQueueConfig>,
+    shared_queue_updates: Option<tokio::sync::broadcast::Sender<()>>,
 }
 
 impl YouTubePipeline {
     #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_cache_dir_and_state(None, None, None)
+        Self::with_cache_dir_and_state(None, None, None, None)
     }
 
     pub fn with_cache_dir_and_state(
         cache_dir: Option<std::path::PathBuf>,
         shared_state_path: Option<std::path::PathBuf>,
         shared_queue_defaults: Option<(String, String, String)>,
+        shared_queue_updates: Option<tokio::sync::broadcast::Sender<()>>,
     ) -> Self {
         let (pcm_tx, pcm_rx) = mpsc::channel(1024);
         let default_repo = shared_queue_defaults.as_ref().map(|(repo, _, _)| repo.clone());
@@ -551,6 +553,7 @@ impl YouTubePipeline {
             loop_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cache_dir,
             shared_queue,
+            shared_queue_updates,
         }
     }
 }
@@ -582,6 +585,7 @@ impl AudioPipeline for YouTubePipeline {
             let cache_dir = self.cache_dir.clone();
             let volume = self.volume.clone();
             let shared_queue = self.shared_queue.clone();
+            let shared_queue_updates = self.shared_queue_updates.clone();
 
             tokio::spawn(async move {
                 run_playback_loop(
@@ -594,6 +598,7 @@ impl AudioPipeline for YouTubePipeline {
                     cache_dir,
                     volume,
                     shared_queue,
+                    shared_queue_updates,
                 )
                 .await;
                 crate::dlog!("[DJ] Playback loop ended");
@@ -726,21 +731,47 @@ async fn run_playback_loop(
     cache_dir: Option<std::path::PathBuf>,
     volume: Arc<AtomicU8>,
     shared_queue: Option<SharedQueueConfig>,
+    shared_queue_updates: Option<tokio::sync::broadcast::Sender<()>>,
 ) {
     let source = YtDlpSource::new(cache_dir);
     crate::dlog!("[DJ] Playback loop started");
 
-    if let Some(cfg) = shared_queue.clone() {
+    let use_webhook_updates = shared_queue_updates.is_some();
+    if let (Some(cfg), Some(updates_tx)) = (shared_queue.clone(), shared_queue_updates.clone()) {
         let queue_sync = queue.clone();
         let active_sync = active.clone();
         let cache_dir = source.cache_dir.clone();
         tokio::spawn(async move {
+            let mut rx = updates_tx.subscribe();
+            // Initial sync
+            if let Ok(data) = fetch_shared_queue_data(&cfg) {
+                let prefetch_items: Vec<String> = data.items.iter()
+                    .take(2)
+                    .map(|t| t.url.clone())
+                    .collect();
+                let source_for_prefetch = YtDlpSource::new(cache_dir.clone());
+                prefetch_tracks(&source_for_prefetch, prefetch_items).await;
+
+                if let Ok(mut q) = queue_sync.lock() {
+                    *q = data.items;
+                }
+                if !data.needs_metadata.is_empty() {
+                    let cfg_clone = cfg.clone();
+                    let items = data.needs_metadata;
+                    tokio::spawn(async move {
+                        fetch_and_append_metadata(&cfg_clone, items).await;
+                    });
+                }
+                let _ = write_shared_state(&cfg, SharedQueueState { last_seen_id: data.max_id });
+            }
             loop {
                 if !*active_sync.lock().unwrap_or_else(|e| e.into_inner()) {
                     break;
                 }
+                if rx.recv().await.is_err() {
+                    break;
+                }
                 if let Ok(data) = fetch_shared_queue_data(&cfg) {
-                    // Prefetch next two items whenever we see the queue
                     let prefetch_items: Vec<String> = data.items.iter()
                         .take(2)
                         .map(|t| t.url.clone())
@@ -760,7 +791,6 @@ async fn run_playback_loop(
                     }
                     let _ = write_shared_state(&cfg, SharedQueueState { last_seen_id: data.max_id });
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         });
     }
@@ -769,6 +799,30 @@ async fn run_playback_loop(
         // Check if still active
         if !*active.lock().unwrap_or_else(|e| e.into_inner()) {
             break;
+        }
+
+        if !use_webhook_updates {
+            if let Some(cfg) = shared_queue.as_ref() {
+                let should_fetch = queue
+                    .lock()
+                    .map(|q| q.is_empty())
+                    .unwrap_or(true);
+                if should_fetch {
+                    if let Ok(data) = fetch_shared_queue_data(cfg) {
+                        if let Ok(mut q) = queue.lock() {
+                            *q = data.items;
+                        }
+                        if !data.needs_metadata.is_empty() {
+                            let cfg_clone = cfg.clone();
+                            let items = data.needs_metadata;
+                            tokio::spawn(async move {
+                                fetch_and_append_metadata(&cfg_clone, items).await;
+                            });
+                        }
+                        let _ = write_shared_state(cfg, SharedQueueState { last_seen_id: data.max_id });
+                    }
+                }
+            }
         }
 
         // Pop next track from queue

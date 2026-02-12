@@ -37,9 +37,10 @@ pub fn spawn_shared_queue_webhook(
     repo: String,
     path: String,
     gh_path: String,
+    updates_tx: Option<tokio::sync::broadcast::Sender<()>>,
 ) {
     tauri::async_runtime::spawn(async move {
-        if let Err(err) = run_webhook_listener(app, repo, path, gh_path).await {
+        if let Err(err) = run_webhook_listener(app, repo, path, gh_path, updates_tx).await {
             crate::dlog!("[Queue] Webhook listener error: {err}");
         }
     });
@@ -50,6 +51,7 @@ async fn run_webhook_listener(
     repo: String,
     path: String,
     gh_path: String,
+    updates_tx: Option<tokio::sync::broadcast::Sender<()>>,
 ) -> Result<(), String> {
     let host = std::env::var("GH_HOST").unwrap_or_else(|_| "github.com".to_string());
     let token = gh_auth_token(&gh_path, &host).await?;
@@ -79,6 +81,9 @@ async fn run_webhook_listener(
             .map_err(|e| format!("invalid webhook body json: {e}"))?;
         if queue_path_touched(&body_json, &repo, &path) {
             let _ = app.emit("shared-queue-updated", ());
+            if let Some(tx) = updates_tx.as_ref() {
+                let _ = tx.send(());
+            }
         }
         let ack = WsEventAck {
             status: 200,
@@ -210,13 +215,13 @@ mod tests {
             "repository": { "full_name": "owner/repo" },
             "commits": [
                 {
-                    "added": ["queue.ndjson"],
+                    "added": ["events.ndjson"],
                     "modified": [],
                     "removed": []
                 }
             ]
         });
-        assert!(queue_path_touched(&body, "owner/repo", "queue.ndjson"));
+        assert!(queue_path_touched(&body, "owner/repo", "events.ndjson"));
         assert!(!queue_path_touched(&body, "owner/repo", "other.ndjson"));
     }
 
@@ -226,12 +231,12 @@ mod tests {
             "repository": { "full_name": "other/repo" },
             "commits": [
                 {
-                    "added": ["queue.ndjson"],
+                    "added": ["events.ndjson"],
                     "modified": [],
                     "removed": []
                 }
             ]
         });
-        assert!(!queue_path_touched(&body, "owner/repo", "queue.ndjson"));
+        assert!(!queue_path_touched(&body, "owner/repo", "events.ndjson"));
     }
 }
