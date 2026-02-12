@@ -85,6 +85,10 @@ async fn run_webhook_listener(
         }
 
         crate::dlog!("[Queue] Webhook listener connected");
+        let _ = app.emit("shared-queue-updated", ());
+        if let Some(tx) = updates_tx.as_ref() {
+            let _ = tx.send(());
+        }
         let mut ping = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             tokio::select! {
