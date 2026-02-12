@@ -20,16 +20,20 @@ pub struct SharedNowPlaying {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct SharedQueueItem {
     pub url: String,
     pub title: Option<String>,
     pub id: u64,
+    pub queued_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct SharedHistoryItem {
     pub url: String,
     pub title: Option<String>,
+    pub queued_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -64,7 +68,7 @@ pub trait AudioPipeline: Send + Sync {
     fn volume(&self) -> u8;
 
     /// Add a URL to the playback queue.
-    fn queue_track(&self, url: String) -> Result<(), String>;
+    fn queue_track(&self, url: String, queued_by: Option<String>) -> Result<(), String>;
 
     /// Skip the currently playing track.
     fn skip_track(&self) -> Result<(), String>;
@@ -140,7 +144,7 @@ impl AudioPipeline for StubAudioPipeline {
         *self.volume.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn queue_track(&self, _url: String) -> Result<(), String> {
+    fn queue_track(&self, _url: String, _queued_by: Option<String>) -> Result<(), String> {
         Ok(())
     }
 

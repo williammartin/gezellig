@@ -18,7 +18,7 @@ falling back to polling if the webhook connection fails.
 The queue file is NDJSON with append-only events:
 
 ```
-{ "id": 1, "type": "queued", "url": "https://..." }
+{ "id": 1, "type": "queued", "url": "https://...", "by": "Alex" }
 { "id": 2, "type": "played", "ref": 1 }
 { "id": 3, "type": "failed", "ref": 1 }
 { "id": 4, "type": "playing", "ref": 1, "title": "Song Title", "url": "https://..." }

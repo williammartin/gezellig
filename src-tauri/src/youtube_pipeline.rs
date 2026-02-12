@@ -439,6 +439,7 @@ pub struct QueuedTrack {
     #[allow(dead_code)]
     pub title: String,
     pub queued_id: Option<u64>,
+    pub queued_by: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -461,6 +462,7 @@ struct QueueEvent {
     event_type: String,
     url: Option<String>,
     title: Option<String>,
+    by: Option<String>,
     #[serde(rename = "ref")]
     ref_id: Option<u64>,
     order: Option<Vec<u64>>,
@@ -480,7 +482,7 @@ struct SharedQueueData {
     max_id: u64,
     skip_events: HashMap<u64, u64>,
     needs_metadata: Vec<(u64, String)>,
-    history: Vec<(String, Option<String>)>,
+    history: Vec<(String, Option<String>, Option<String>)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -645,15 +647,16 @@ impl AudioPipeline for YouTubePipeline {
         self.volume.load(Ordering::Relaxed)
     }
 
-    fn queue_track(&self, url: String) -> Result<(), String> {
+    fn queue_track(&self, url: String, queued_by: Option<String>) -> Result<(), String> {
         if let Some(cfg) = self.shared_queue.as_ref() {
-            let _ = append_queue_event(cfg, &url)?;
+            let _ = append_queue_event(cfg, &url, queued_by.as_deref())?;
             return Ok(());
         }
         let track = QueuedTrack {
             url,
             title: "Loading...".to_string(),
             queued_id: None,
+            queued_by,
         };
         let mut queue = self.queue.lock().map_err(|e| e.to_string())?;
         queue.push(track);
@@ -1080,6 +1083,7 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
     let mut failed: HashSet<u64> = HashSet::new();
     let mut skip_events: HashMap<u64, u64> = HashMap::new();
     let mut metadata: HashMap<u64, String> = HashMap::new();
+    let mut queued_by: HashMap<u64, String> = HashMap::new();
     let mut last_cleared_id = 0;
     let mut now_playing: Option<SharedNowPlayingInternal> = None;
     let mut latest_reorder: Option<Vec<u64>> = None;
@@ -1095,6 +1099,9 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
                 match event.event_type.as_str() {
                     "queued" => {
                         if let Some(url) = event.url {
+                            if let Some(by) = event.by {
+                                queued_by.insert(event.id, by);
+                            }
                             queued.push((event.id, url));
                         }
                     }
@@ -1134,6 +1141,7 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
                         failed.clear();
                         skip_events.clear();
                         metadata.clear();
+                        queued_by.clear();
                         now_playing = None;
                         latest_reorder = None;
                     }
@@ -1161,11 +1169,11 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
     queued.sort_by_key(|(id, _)| *id);
 
     // Build history from played items (most recent first)
-    let history: Vec<(String, Option<String>)> = queued
+    let history: Vec<(String, Option<String>, Option<String>)> = queued
         .iter()
         .filter(|(id, _)| *id > last_cleared_id && (played.contains(id) || failed.contains(id)))
         .rev()
-        .map(|(id, url)| (url.clone(), metadata.get(id).cloned()))
+        .map(|(id, url)| (url.clone(), metadata.get(id).cloned(), queued_by.get(id).cloned()))
         .collect();
 
     let playing_id = now_playing.as_ref().and_then(|now| now.queued_id);
@@ -1183,6 +1191,7 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
                 url,
                 title: title.unwrap_or_else(|| "Loading...".to_string()),
                 queued_id: Some(id),
+                queued_by: queued_by.get(&id).cloned(),
             }
         })
         .collect();
@@ -1225,11 +1234,12 @@ fn shared_queue_snapshot_from_data(data: SharedQueueData) -> SharedQueueSnapshot
                 url: t.url,
                 title: if t.title == "Loading..." { None } else { Some(t.title) },
                 id: t.queued_id.unwrap_or(0),
+                queued_by: t.queued_by,
             }
         }).collect(),
         now_playing,
-        history: data.history.into_iter().map(|(url, title)| {
-            SharedHistoryItem { url, title }
+        history: data.history.into_iter().map(|(url, title, queued_by)| {
+            SharedHistoryItem { url, title, queued_by }
         }).collect(),
     }
 }
@@ -1313,13 +1323,18 @@ fn write_shared_state(cfg: &SharedQueueConfig, state: SharedQueueState) -> Resul
     std::fs::write(&cfg.state_path, content).map_err(|e| format!("Failed to write state: {e}"))
 }
 
-fn append_queue_event(cfg: &SharedQueueConfig, url: &str) -> Result<u64, String> {
-    let event_builder = |next_id| {
-        serde_json::json!({
+fn append_queue_event(cfg: &SharedQueueConfig, url: &str, queued_by: Option<&str>) -> Result<u64, String> {
+    let queued_by = queued_by.map(|s| s.to_string());
+    let event_builder = move |next_id| {
+        let mut event = serde_json::json!({
             "id": next_id,
             "type": "queued",
             "url": url,
-        })
+        });
+        if let Some(by) = queued_by.clone() {
+            event["by"] = serde_json::Value::String(by);
+        }
+        event
     };
     append_event_with_retry(cfg, event_builder)
 }
@@ -1547,7 +1562,7 @@ mod tests {
         let pipeline = YouTubePipeline::new();
         assert!(pipeline.start().is_ok());
         pipeline
-            .queue_track("https://youtube.com/watch?v=test".to_string())
+            .queue_track("https://youtube.com/watch?v=test".to_string(), None)
             .unwrap_or_else(|e| panic!("queue_track failed: {e}"));
         assert_eq!(pipeline.get_queue().len(), 1);
         assert!(pipeline.stop().is_ok());
@@ -1579,10 +1594,10 @@ mod tests {
     fn queue_track_adds_to_queue() {
         let pipeline = YouTubePipeline::new();
         pipeline
-            .queue_track("https://youtube.com/watch?v=abc".to_string())
+            .queue_track("https://youtube.com/watch?v=abc".to_string(), None)
             .unwrap_or_else(|e| panic!("queue_track failed: {e}"));
         pipeline
-            .queue_track("https://youtube.com/watch?v=def".to_string())
+            .queue_track("https://youtube.com/watch?v=def".to_string(), None)
             .unwrap_or_else(|e| panic!("queue_track failed: {e}"));
         let queue = pipeline.get_queue();
         assert_eq!(queue.len(), 2);

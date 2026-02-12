@@ -452,9 +452,13 @@ fn get_mic_level(mic_level: State<'_, MicLevel>) -> Result<u8, String> {
 }
 
 #[tauri::command]
-fn queue_track(pipeline: State<'_, Mutex<DynAudioPipeline>>, url: String) -> Result<(), String> {
+fn queue_track(
+    pipeline: State<'_, Mutex<DynAudioPipeline>>,
+    url: String,
+    queued_by: Option<String>,
+) -> Result<(), String> {
     let p = pipeline.lock().map_err(|e| e.to_string())?;
-    p.queue_track(url)
+    p.queue_track(url, queued_by)
 }
 
 #[tauri::command]
@@ -489,7 +493,7 @@ fn get_shared_queue_state(
     } else {
         Ok(SharedQueueSnapshot {
             queue: p.get_queue().into_iter().enumerate().map(|(i, url)| {
-                crate::audio::SharedQueueItem { url, title: None, id: i as u64 }
+                crate::audio::SharedQueueItem { url, title: None, id: i as u64, queued_by: None }
             }).collect(),
             now_playing: None,
             history: Vec::new(),

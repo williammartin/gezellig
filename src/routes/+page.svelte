@@ -16,7 +16,7 @@
   let livekitConnected = $state(false);
   let notifications: string[] = $state([]);
   let djQueueUrl = $state("");
-  type SharedQueueItem = { url: string; title: string | null; id: number };
+  type SharedQueueItem = { url: string; title: string | null; id: number; queuedBy: string | null };
   let djQueue: SharedQueueItem[] = $state([]);
   type UpdateCheck = {
     available: boolean;
@@ -29,7 +29,7 @@
   let updateInfo: UpdateCheck | null = $state(null);
   let updateCommand = $state("");
   let startupStarted = $state(false);
-  type SharedHistoryItem = { url: string; title: string | null };
+  type SharedHistoryItem = { url: string; title: string | null; queuedBy: string | null };
   type SharedQueueState = {
     queue: SharedQueueItem[];
     nowPlaying: { title: string; url: string } | null;
@@ -339,12 +339,12 @@
     djQueueUrl = "";
     debugLog(`addToQueue: ${url}`);
     try {
-      await invoke("queue_track", { url });
+      await invoke("queue_track", { url, queuedBy: displayName || null });
       debugLog('queue_track OK');
       await refreshQueue();
     } catch (e) {
       debugLog(`addToQueue error: ${e}`);
-      djQueue = [...djQueue, { url, title: null, id: 0 }];
+      djQueue = [...djQueue, { url, title: null, id: 0, queuedBy: displayName || null }];
     }
   }
 
@@ -387,7 +387,7 @@
 
   async function requeueTrack(url: string) {
     try {
-      await invoke("queue_track", { url });
+      await invoke("queue_track", { url, queuedBy: displayName || null });
       debugLog(`Requeued: ${url}`);
       await refreshQueue();
     } catch (e) {
@@ -619,14 +619,14 @@
         </section>
 
         <div class="actions">
-            <div class="card volume-card">
-              <label class="volume-control">
-                Music Volume
-                <input data-testid="music-volume" type="range" min="0" max="100" bind:value={musicVolume} oninput={updateMusicVolume} />
-              </label>
-            </div>
             <div data-testid="queue-panel" class="card dj-section">
-              <p class="dj-label">🎵 Shared Queue</p>
+              <div class="queue-header">
+                <p class="dj-label">🎵 Shared Queue</p>
+                <label class="volume-control">
+                  Music volume
+                  <input data-testid="music-volume" type="range" min="0" max="100" bind:value={musicVolume} oninput={updateMusicVolume} />
+                </label>
+              </div>
               <div class="queue-input">
                 <input data-testid="queue-url-input" type="text" placeholder="Paste YouTube URL..." bind:value={djQueueUrl} onkeydown={(e) => e.key === 'Enter' && addToQueue()} />
                 <button data-testid="add-to-queue-button" class="btn" onclick={addToQueue}>Add to Queue</button>
@@ -636,7 +636,7 @@
                 {#if nowPlaying}
                   <div class="queue-item">{nowPlaying.title}</div>
                   <div class="queue-item">
-                    <a href={nowPlaying.url} target="_blank" rel="noreferrer">{nowPlaying.url}</a>
+                    <a class="queue-link" href={nowPlaying.url} target="_blank" rel="noreferrer">{nowPlaying.url}</a>
                   </div>
                 {:else}
                   <p class="empty-state">Nothing playing</p>
@@ -651,13 +651,24 @@
                   <p class="queue-label">Queue ({djQueue.length})</p>
                   {#each djQueue as item, i}
                     <div
-                      class="queue-item"
+                      class="queue-item queue-row"
                       draggable="true"
+                      role="button"
+                      tabindex="0"
+                      aria-label={`Reorder ${item.title || item.url}`}
                       ondragstart={() => handleDragStart(i)}
                       ondragover={(e) => e.preventDefault()}
                       ondrop={() => handleDrop(i)}
                       style={dragIndex === i ? 'opacity: 0.5' : ''}
-                    >⠿ {i + 1}. {item.title || item.url}</div>
+                    >
+                      <span class="queue-drag">⠿</span>
+                      <div class="queue-text">
+                        <div class="queue-title">{i + 1}. {item.title || item.url}</div>
+                        {#if item.queuedBy}
+                          <div class="queue-meta">Queued by {item.queuedBy}</div>
+                        {/if}
+                      </div>
+                    </div>
                   {/each}
                 </div>
               {:else}
@@ -669,10 +680,15 @@
                     {showHistory ? 'Hide' : 'Show'} History ({history.length})
                   </button>
                   {#if showHistory}
-                    <div data-testid="history-panel">
+                    <div data-testid="history-panel" class="history-panel">
                       {#each history as item}
                         <div class="queue-item history-item">
-                          <span>{item.title || item.url}</span>
+                          <div class="queue-text">
+                            <div class="queue-title">{item.title || item.url}</div>
+                            {#if item.queuedBy}
+                              <div class="queue-meta">Queued by {item.queuedBy}</div>
+                            {/if}
+                          </div>
                           <button class="btn btn-outline btn-small" onclick={() => requeueTrack(item.url)} data-testid="requeue-button">Requeue</button>
                         </div>
                       {/each}
@@ -707,14 +723,45 @@
   font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 15px;
   line-height: 1.6;
-  color: #1a1a1a;
-  background-color: #f0edea;
+  color: var(--text);
+  background-color: var(--bg);
+  --bg: #f4f1ed;
+  --card: #fdfaf6;
+  --card-alt: #f7f2ec;
+  --border: #e1dad2;
+  --text: #2b2420;
+  --muted: #7a6f64;
+  --accent: #b3834f;
+  --link: #7b5f3f;
+  --shadow: rgba(0, 0, 0, 0.08);
+  --sidebar: #f6f1ec;
+  --sidebar-hover: #efe9e2;
+  --chip: #efe7df;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f1b17;
+    --card: #26221d;
+    --card-alt: #2c2722;
+    --border: #3a322c;
+    --text: #efe7dd;
+    --muted: #b5a89a;
+    --accent: #d1a670;
+    --link: #d6b68d;
+    --shadow: rgba(0, 0, 0, 0.45);
+    --sidebar: #241f1a;
+    --sidebar-hover: #2b251f;
+    --chip: #312b24;
+  }
 }
 
 :global(html), :global(body) {
   height: 100%;
   margin: 0;
   overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
 }
 
 /* ---- App layout ---- */
@@ -725,8 +772,8 @@
 
 .sidebar {
   width: 220px;
-  background: #f7f4f1;
-  border-right: 1px solid #e5e2df;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   padding: 1.25rem 0;
@@ -738,7 +785,7 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0 1.25rem 1.25rem;
-  border-bottom: 1px solid #e5e2df;
+  border-bottom: 1px solid var(--border);
   margin-bottom: 0.75rem;
 }
 
@@ -768,7 +815,7 @@
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: #666;
+  color: var(--muted);
   font-size: 0.9rem;
   font-weight: 500;
   cursor: pointer;
@@ -779,15 +826,15 @@
 }
 
 .nav-item:hover {
-  background: #ece8e4;
-  color: #1a1a1a;
+  background: var(--sidebar-hover);
+  color: var(--text);
   border: none;
   box-shadow: none;
 }
 
 .nav-item.active {
-  background: #ece8e4;
-  color: #1a1a1a;
+  background: var(--sidebar-hover);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -799,7 +846,7 @@
 
 .sidebar-footer {
   padding: 0.75rem 1.25rem 0;
-  border-top: 1px solid #e5e2df;
+  border-top: 1px solid var(--border);
   margin-top: auto;
 }
 
@@ -808,7 +855,7 @@
   align-items: center;
   gap: 0.5rem;
   font-size: 0.85rem;
-  color: #555;
+  color: var(--muted);
 }
 
 .status-dot {
@@ -836,7 +883,7 @@
 .content {
   flex: 1;
   padding: 2rem 2.5rem;
-  max-width: 640px;
+  max-width: 820px;
 }
 
 h2 {
@@ -844,17 +891,17 @@ h2 {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #999;
+  color: var(--muted);
   margin-bottom: 0.75rem;
 }
 
 .card {
-  background: #ffffff;
-  border: 1px solid #e5e2df;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 1rem 1.25rem;
   margin-bottom: 1rem;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 3px var(--shadow);
 }
 
 /* ---- User list with colored bars ---- */
@@ -870,12 +917,12 @@ h2 {
   padding: 0.5rem 0;
   gap: 0.6rem;
   font-size: 0.95rem;
-  color: #3a3a3a;
+  color: var(--text);
   position: relative;
 }
 
 .user-list li + li {
-  border-top: 1px solid #f0edea;
+  border-top: 1px solid var(--border);
 }
 
 .user-bar {
@@ -895,7 +942,7 @@ h2 {
 }
 
 .empty-state {
-  color: #bbb;
+  color: var(--muted);
   font-size: 0.9rem;
   margin: 0;
 }
@@ -907,29 +954,30 @@ h2 {
 
 .btn {
   border-radius: 8px;
-  border: 1px solid #e5e2df;
+  border: 1px solid var(--border);
   padding: 0.55em 1.1em;
   font-size: 0.9rem;
   font-weight: 500;
   cursor: pointer;
-  background: #ffffff;
-  color: #1a1a1a;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 1px 2px var(--shadow);
   transition: all 0.15s ease;
 }
 
 .btn:hover {
-  border-color: #ccc;
-  background: #f7f5f3;
+  border-color: var(--border);
+  background: var(--card-alt);
 }
 
 .btn-outline {
   background: transparent;
-  border-color: #d5d2cf;
+  border-color: var(--border);
+  color: var(--text);
 }
 
 .btn-outline:hover {
-  background: #f7f5f3;
+  background: var(--card-alt);
 }
 
 /* ---- DJ section ---- */
@@ -939,21 +987,28 @@ h2 {
 
 .dj-label {
   font-weight: 600;
-  margin: 0 0 0.5rem;
+  margin: 0;
+}
+
+.queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
 }
 
 .volume-control {
-  display: block;
-  margin: 0.75rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   font-size: 0.85rem;
-  color: #888;
+  color: var(--muted);
   font-weight: 500;
 }
 
 .volume-control input[type="range"] {
-  display: block;
-  width: 100%;
-  margin-top: 0.35rem;
+  width: 160px;
 }
 
 .queue-input {
@@ -971,16 +1026,17 @@ h2 {
 .queue-input input[type="text"] {
   flex: 1;
   padding: 0.5rem 0.7rem;
-  border: 1px solid #e5e2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
   font-size: 0.85rem;
-  background: #faf9f7;
+  background: var(--card-alt);
+  color: var(--text);
 }
 
 .queue-list {
   margin: 0.5rem 0;
   padding: 0.5rem 0.8rem;
-  background: #f7f5f3;
+  background: var(--card-alt);
   border-radius: 8px;
   font-size: 0.85rem;
 }
@@ -988,16 +1044,47 @@ h2 {
 .queue-label {
   font-weight: 600;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--muted);
   margin: 0 0 0.3rem;
 }
 
 .queue-item {
   padding: 0.2rem 0;
-  color: #666;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.2rem;
+}
+.queue-drag {
+  color: var(--muted);
+}
+.queue-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  overflow: hidden;
+}
+.queue-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.queue-meta {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.queue-link {
+  color: var(--link);
+  text-decoration: none;
+}
+.queue-link:hover {
+  text-decoration: underline;
 }
 .queue-item[draggable="true"] {
   cursor: grab;
@@ -1009,11 +1096,15 @@ h2 {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  justify-content: space-between;
 }
-.history-item span {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.history-panel {
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
 .btn-small {
   padding: 0.1rem 0.4rem;
@@ -1029,11 +1120,11 @@ h2 {
   z-index: 1000;
 }
 .update-card {
-  background: #ffffff;
+  background: var(--card);
   border-radius: 12px;
   padding: 2rem;
   width: min(720px, 90vw);
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 20px 40px var(--shadow);
 }
 .update-command {
   margin: 1rem 0;
