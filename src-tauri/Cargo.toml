@@ -34,7 +34,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 cpal = "0.15.3"
 base64 = "0.22.1"
-tokio-tungstenite = "0.26.2"
+tokio-tungstenite = { version = "0.26.2", features = ["native-tls"] }
 http = "1.1.0"
 
 [dev-dependencies]
