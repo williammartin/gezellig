@@ -13,14 +13,16 @@ use room::RoomState;
 use settings::Settings;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU8, Ordering};
-use tauri::{Manager, State};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use tauri::{AppHandle, Manager, State};
 use tracing_subscriber::EnvFilter;
 use tokio::sync::{broadcast, Mutex as TokioMutex};
 
 struct SettingsPath(std::path::PathBuf);
 struct PlaybackVolume(Arc<AtomicU8>);
 struct MicLevel(Arc<AtomicU8>);
+struct QueueUpdatesTx(broadcast::Sender<()>);
+struct WebhookStarted(Arc<AtomicBool>);
 
 /// Holds the DJ publisher shutdown handle.
 struct DjPublisherHandle {
@@ -48,7 +50,6 @@ impl DebugLogBuffer {
 
     pub fn push(&self, msg: String) {
         if let Ok(mut logs) = self.logs.lock() {
-            eprintln!("{msg}");
             if logs.len() > 500 {
                 let drain_to = logs.len() - 250;
                 logs.drain(..drain_to);
@@ -70,10 +71,9 @@ impl DebugLogBuffer {
 static DEBUG_LOG: std::sync::OnceLock<DebugLogBuffer> = std::sync::OnceLock::new();
 
 pub fn debug_log(msg: String) {
+    tracing::info!(event = "app_log", message = %msg);
     if let Some(buf) = DEBUG_LOG.get() {
         buf.push(msg);
-    } else {
-        eprintln!("{msg}");
     }
 }
 
@@ -547,6 +547,39 @@ fn get_env_config() -> std::collections::HashMap<String, String> {
 }
 
 #[tauri::command]
+fn start_queue_webhook(
+    app: AppHandle,
+    updates_tx: State<'_, QueueUpdatesTx>,
+    started: State<'_, WebhookStarted>,
+    repo: String,
+    path: String,
+    gh_path: String,
+    secret: String,
+) -> Result<(), String> {
+    if secret.trim().is_empty() {
+        return Err("Webhook secret is required".to_string());
+    }
+    if started.0.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    tracing::info!(
+        event = "queue_webhook_requested",
+        repo = %repo,
+        path = %path,
+        secret_len = secret.len()
+    );
+    shared_queue_webhook::spawn_shared_queue_webhook(
+        app,
+        repo,
+        path,
+        gh_path,
+        secret,
+        Some(updates_tx.0.clone()),
+    );
+    Ok(())
+}
+
+#[tauri::command]
 async fn livekit_connect(
     lk_room: State<'_, TokioMutex<Option<LiveKitRoom>>>,
     playback_volume: State<'_, PlaybackVolume>,
@@ -624,6 +657,7 @@ pub fn run() {
             let shared_queue_file =
                 std::env::var("GEZELLIG_SHARED_QUEUE_FILE").unwrap_or(settings.shared_queue_file);
             let gh_path = std::env::var("GEZELLIG_GH_PATH").unwrap_or(settings.gh_path);
+            let webhook_started = Arc::new(AtomicBool::new(false));
 
             let cache_dir = app.path().app_cache_dir().ok().map(|d| d.join("audio"));
             let shared_state = app_dir.join("shared_queue_state.json");
@@ -639,13 +673,8 @@ pub fn run() {
                 Some(queue_updates_tx.clone()),
             );
             app.manage(Mutex::new(Box::new(pipeline) as DynAudioPipeline));
-            shared_queue_webhook::spawn_shared_queue_webhook(
-                app.handle().clone(),
-                shared_queue_repo,
-                shared_queue_file,
-                gh_path,
-                Some(queue_updates_tx),
-            );
+            app.manage(QueueUpdatesTx(queue_updates_tx));
+            app.manage(WebhookStarted(webhook_started));
 
             Ok(())
         })
@@ -681,6 +710,7 @@ pub fn run() {
             livekit_is_connected,
             get_backend_logs,
             get_env_config,
+            start_queue_webhook,
         ])
         .run(tauri::generate_context!())
         ;

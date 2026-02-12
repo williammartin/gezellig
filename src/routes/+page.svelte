@@ -60,13 +60,25 @@
       const parts = token.split('.');
       if (parts.length !== 3) return "Unknown";
       const payload = JSON.parse(atob(parts[1]));
-      return payload.name || payload.sub || "Unknown";
+      return payload.name || payload.sub || payload.identity || "Unknown";
+    } catch {
+      return "Unknown";
+    }
+  }
+
+  function extractSecretFromToken(token: string): string {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return "Unknown";
+      const payload = JSON.parse(atob(parts[1]));
+      return payload.sub || payload.identity || payload.name || "Unknown";
     } catch {
       return "Unknown";
     }
   }
 
   let displayName = $derived(extractIdentityFromToken(livekitToken));
+  let webhookSecret = $derived(extractSecretFromToken(livekitToken));
 
   async function loadMusicVolume() {
     try {
@@ -224,6 +236,16 @@
       debugLog('LiveKit connected successfully');
       startParticipantPolling();
       refreshQueue();
+      try {
+        await invoke("start_queue_webhook", {
+          repo: sharedQueueRepo,
+          path: sharedQueueFile,
+          ghPath,
+          secret: webhookSecret,
+        });
+      } catch (e) {
+        debugLog(`start_queue_webhook error: ${e}`);
+      }
       await startQueueWebhookListener();
       if (djBotMode) {
         debugLog("DJ bot mode enabled");
@@ -247,9 +269,6 @@
     }
   }
 
-  function startQueuePolling() {}
-
-  function stopQueuePolling() {}
 
   async function startQueueWebhookListener() {
     if (queueWebhookUnlisten) return;
@@ -315,7 +334,6 @@
     micTestActive = false;
     micLevel = 0;
     stopMicLevelPolling();
-    stopQueuePolling();
     stopQueueWebhookListener();
   }
 

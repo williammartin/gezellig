@@ -754,12 +754,36 @@ async fn run_playback_loop(
     if let (Some(cfg), Some(updates_tx)) = (shared_queue.clone(), shared_queue_updates.clone()) {
         let queue_sync = queue.clone();
         let active_sync = active.clone();
+        let status_sync = status.clone();
         let cache_dir = source.cache_dir.clone();
         tokio::spawn(async move {
             let mut rx = updates_tx.subscribe();
             // Initial sync
             if let Ok(data) = fetch_shared_queue_data(&cfg) {
-                let prefetch_items: Vec<String> = data.items.iter()
+                let mut next_queue = data.items;
+                if next_queue.is_empty() {
+                    if let Some(now) = data.now_playing {
+                        let status_is_idle = matches!(
+                            *status_sync.lock().unwrap_or_else(|e| e.into_inner()),
+                            DjStatus::Idle
+                        );
+                        if status_is_idle {
+                            tracing::info!(
+                                event = "shared_queue_resume_now_playing",
+                                title = %now.title,
+                                url = %now.url,
+                                queued_id = ?now.queued_id
+                            );
+                            next_queue.push(QueuedTrack {
+                                url: now.url,
+                                title: now.title,
+                                queued_id: now.queued_id,
+                                queued_by: None,
+                            });
+                        }
+                    }
+                }
+                let prefetch_items: Vec<String> = next_queue.iter()
                     .take(2)
                     .map(|t| t.url.clone())
                     .collect();
@@ -767,7 +791,7 @@ async fn run_playback_loop(
                 prefetch_tracks(&source_for_prefetch, prefetch_items).await;
 
                 if let Ok(mut q) = queue_sync.lock() {
-                    *q = data.items;
+                    *q = next_queue;
                 }
                 if !data.needs_metadata.is_empty() {
                     let cfg_clone = cfg.clone();
@@ -786,7 +810,30 @@ async fn run_playback_loop(
                     break;
                 }
                 if let Ok(data) = fetch_shared_queue_data(&cfg) {
-                    let prefetch_items: Vec<String> = data.items.iter()
+                    let mut next_queue = data.items;
+                    if next_queue.is_empty() {
+                        if let Some(now) = data.now_playing {
+                            let status_is_idle = matches!(
+                                *status_sync.lock().unwrap_or_else(|e| e.into_inner()),
+                                DjStatus::Idle
+                            );
+                            if status_is_idle {
+                                tracing::info!(
+                                    event = "shared_queue_resume_now_playing",
+                                    title = %now.title,
+                                    url = %now.url,
+                                    queued_id = ?now.queued_id
+                                );
+                                next_queue.push(QueuedTrack {
+                                    url: now.url,
+                                    title: now.title,
+                                    queued_id: now.queued_id,
+                                    queued_by: None,
+                                });
+                            }
+                        }
+                    }
+                    let prefetch_items: Vec<String> = next_queue.iter()
                         .take(2)
                         .map(|t| t.url.clone())
                         .collect();
@@ -794,7 +841,7 @@ async fn run_playback_loop(
                     prefetch_tracks(&source_for_prefetch, prefetch_items).await;
 
                     if let Ok(mut q) = queue_sync.lock() {
-                        *q = data.items;
+                        *q = next_queue;
                     }
                     if !data.needs_metadata.is_empty() {
                         let cfg_clone = cfg.clone();
@@ -1198,6 +1245,18 @@ fn fetch_shared_queue_data(cfg: &SharedQueueConfig) -> Result<SharedQueueData, S
             now_playing = None;
         }
     }
+
+    tracing::info!(
+        event = "shared_queue_snapshot",
+        repo = %cfg.repo,
+        path = %cfg.path,
+        max_id = max_id,
+        queue_len = items.len(),
+        history_len = history.len(),
+        needs_metadata_len = needs_metadata.len(),
+        skip_events_len = skip_events.len(),
+        now_playing = now_playing.as_ref().map(|p| p.title.as_str()).unwrap_or("")
+    );
 
     Ok(SharedQueueData {
         items,

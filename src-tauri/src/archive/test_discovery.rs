@@ -4,23 +4,20 @@ use librespot::discovery::Discovery;
 
 #[tokio::main]
 async fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
-        .init();
+    tracing_subscriber::fmt().json().init();
 
-    eprintln!("Starting Zeroconf discovery test (dns-sd backend)...");
+    tracing::info!(event = "discovery_start", message = "Starting Zeroconf discovery test (dns-sd backend)");
 
     let config = SessionConfig::default();
-    eprintln!("device_id: {}", config.device_id);
-    eprintln!("client_id: {}", config.client_id);
+    tracing::info!(event = "discovery_config", device_id = %config.device_id, client_id = %config.client_id);
 
     match Discovery::builder(&config.device_id, &config.client_id)
         .name("Gezellig DJ")
         .launch()
     {
         Ok(mut discovery) => {
-            eprintln!("✅ Discovery launched successfully!");
-            eprintln!("Check Spotify for 'Gezellig DJ' device. Waiting 60s...");
-            eprintln!("Will print if credentials are received...");
+            tracing::info!(event = "discovery_launched");
+            tracing::info!(event = "discovery_waiting", message = "Waiting 60s for credentials");
 
             let timeout = tokio::time::sleep(std::time::Duration::from_secs(60));
             tokio::pin!(timeout);
@@ -30,25 +27,25 @@ async fn main() {
                     creds = discovery.next() => {
                         match creds {
                             Some(creds) => {
-                                eprintln!("🎉 Got credentials! username: {:?}", creds.username);
+                                tracing::info!(event = "discovery_credentials", username = ?creds.username);
                                 break;
                             }
                             None => {
-                                eprintln!("Discovery stream ended");
+                                tracing::info!(event = "discovery_stream_ended");
                                 break;
                             }
                         }
                     }
                     _ = &mut timeout => {
-                        eprintln!("⏰ Timeout — no credentials received in 60s");
+                        tracing::warn!(event = "discovery_timeout", seconds = 60);
                         break;
                     }
                 }
             }
-            eprintln!("Done.");
+            tracing::info!(event = "discovery_done");
         }
         Err(e) => {
-            eprintln!("❌ Discovery failed: {e:?}");
+            tracing::error!(event = "discovery_failed", error = ?e);
         }
     }
 }

@@ -12,8 +12,8 @@ Set these environment variables before launching the app:
 - `GEZELLIG_DJ_BOT=1` to run the bot instance that reads the queue and publishes audio
 - `GH_HOST` (optional GitHub host for webhooks, defaults to `github.com`)
 
-The app also listens for GitHub webhook events over a websocket to refresh the queue quickly,
-falling back to polling if the webhook connection fails.
+Each instance uses the LiveKit token identity (sub/identity claim) as the CLI hook secret,
+ensuring a unique websocket URL per app and avoiding webhook conflicts.
 
 The queue file is NDJSON with append-only events:
 
