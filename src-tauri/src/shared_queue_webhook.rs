@@ -19,15 +19,6 @@ struct WebhookSummary {
     name: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct WsEventReceived {
-    #[serde(rename = "Header")]
-    #[allow(dead_code)]
-    header: Option<HashMap<String, Vec<String>>>,
-    #[serde(rename = "Body")]
-    body: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 struct WsEventAck {
     #[serde(rename = "Status")]
@@ -98,6 +89,7 @@ async fn run_webhook_listener(
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes)
             .map_err(|e| format!("invalid webhook body json: {e}"))?;
         if queue_path_touched(&body_json, &repo, &path) {
+            crate::dlog!("[Queue] Webhook event: {}", body_json);
             let _ = app.emit("shared-queue-updated", ());
             if let Some(tx) = updates_tx.as_ref() {
                 let _ = tx.send(());
