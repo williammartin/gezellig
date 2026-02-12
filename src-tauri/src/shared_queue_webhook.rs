@@ -14,6 +14,12 @@ struct CreateHookResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct WebhookSummary {
+    id: u64,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct WsEventReceived {
     #[serde(rename = "Header")]
     #[allow(dead_code)]
@@ -111,30 +117,67 @@ async fn gh_auth_token(gh_path: &str, host: &str) -> Result<String, String> {
 }
 
 async fn create_webhook(gh_path: &str, repo: &str) -> Result<CreateHookResponse, String> {
+    for attempt in 0..2 {
+        let output = tokio::process::Command::new(gh_path)
+            .args([
+                "api",
+                "-X",
+                "POST",
+                &format!("repos/{repo}/hooks"),
+                "-f",
+                "name=cli",
+                "-F",
+                "active=false",
+                "-f",
+                "events[]=push",
+                "-f",
+                "config[content_type]=json",
+                "-F",
+                "config[insecure_ssl]=0",
+            ])
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run gh api: {e}"))?;
+        if output.status.success() {
+            return serde_json::from_slice(&output.stdout)
+                .map_err(|e| format!("Invalid webhook response: {e}"));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if attempt == 0 && stderr.contains("Validation Failed") {
+            if let Ok(hooks) = list_webhooks(gh_path, repo).await {
+                if let Some(hook) = hooks.into_iter().find(|h| h.name == "cli") {
+                    let _ = delete_webhook(gh_path, repo, hook.id).await;
+                    continue;
+                }
+            }
+        }
+        return Err(stderr);
+    }
+    Err("Failed to create webhook".to_string())
+}
+
+async fn list_webhooks(gh_path: &str, repo: &str) -> Result<Vec<WebhookSummary>, String> {
     let output = tokio::process::Command::new(gh_path)
-        .args([
-            "api",
-            "-X",
-            "POST",
-            &format!("repos/{repo}/hooks"),
-            "-f",
-            "name=cli",
-            "-F",
-            "active=false",
-            "-f",
-            "events[]=push",
-            "-f",
-            "config[content_type]=json",
-            "-F",
-            "config[insecure_ssl]=0",
-        ])
+        .args(["api", &format!("repos/{repo}/hooks")])
         .output()
         .await
         .map_err(|e| format!("Failed to run gh api: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
-    serde_json::from_slice(&output.stdout).map_err(|e| format!("Invalid webhook response: {e}"))
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("Invalid webhooks response: {e}"))
+}
+
+async fn delete_webhook(gh_path: &str, repo: &str, hook_id: u64) -> Result<(), String> {
+    let output = tokio::process::Command::new(gh_path)
+        .args(["api", "-X", "DELETE", &format!("repos/{repo}/hooks/{hook_id}")])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run gh api: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    Ok(())
 }
 
 async fn activate_hook(gh_path: &str, hook_url: &str) -> Result<(), String> {
