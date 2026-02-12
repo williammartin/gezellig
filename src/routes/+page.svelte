@@ -145,6 +145,11 @@
         livekitToken = data.livekitToken || "";
         sharedQueueRepo = data.sharedQueueRepo || sharedQueueRepo;
         sharedQueueFile = data.sharedQueueFile || sharedQueueFile;
+        if (sharedQueueFile === "queue.ndjson") {
+          sharedQueueFile = "events.ndjson";
+          data.sharedQueueFile = sharedQueueFile;
+          localStorage.setItem("gezellig-setup", JSON.stringify(data));
+        }
         ghPath = data.ghPath || ghPath;
         if (livekitUrl && livekitToken) {
           setupComplete = true;
