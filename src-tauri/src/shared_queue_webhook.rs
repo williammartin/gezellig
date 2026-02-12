@@ -23,9 +23,9 @@ struct WebhookSummary {
 struct WsEventReceived {
     #[serde(rename = "Header")]
     #[allow(dead_code)]
-    header: HashMap<String, Vec<String>>,
+    header: Option<HashMap<String, Vec<String>>>,
     #[serde(rename = "Body")]
-    body: String,
+    body: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,10 +78,22 @@ async fn run_webhook_listener(
                 .map_err(|e| format!("invalid websocket utf8: {e}"))?,
             _ => continue,
         };
-        let event: WsEventReceived = serde_json::from_str(&text)
-            .map_err(|e| format!("invalid websocket payload: {e}"))?;
+        let event_json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(value) => value,
+            Err(err) => {
+                crate::dlog!("[Queue] Invalid websocket payload JSON: {err}");
+                continue;
+            }
+        };
+        let body = match event_json.get("Body").and_then(|v| v.as_str()) {
+            Some(body) => body,
+            None => {
+                crate::dlog!("[Queue] Webhook payload missing Body field, skipping");
+                continue;
+            }
+        };
         let body_bytes = base64::engine::general_purpose::STANDARD
-            .decode(event.body.as_bytes())
+            .decode(body.as_bytes())
             .map_err(|e| format!("invalid webhook body encoding: {e}"))?;
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes)
             .map_err(|e| format!("invalid webhook body json: {e}"))?;
